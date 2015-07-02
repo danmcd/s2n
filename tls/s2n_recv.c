@@ -14,7 +14,9 @@
  */
 
 /* Use usleep */
+#ifndef __sun
 #define _XOPEN_SOURCE 500
+#endif /* __sun doesn't need XOPEN_SOURCE defined for usleep() in unistd.h. */
 #include <unistd.h>
 
 #include <errno.h>
