@@ -16,6 +16,7 @@
 #include <openssl/engine.h>
 
 #include <sys/types.h>
+#include <sys/sysmacros.h>
 #include <sys/stat.h>
 #include <sys/param.h>
 #include <unistd.h>
