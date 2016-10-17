@@ -2,7 +2,7 @@
 
 s2n is a C99 implementation of the TLS/SSL protocols that is designed to be simple, small, fast, and with security as a priority. It is released and licensed under the Apache Software License 2.0. 
 
-[![Build Status](https://img.shields.io/travis/awslabs/s2n.svg)](https://travis-ci.org/aws/s2n)
+[![Build Status](https://img.shields.io/travis/awslabs/s2n.svg)](https://travis-ci.org/awslabs/s2n)
 [![Apache 2 License](https://img.shields.io/github/license/awslabs/s2n.svg)](http://aws.amazon.com/apache-2-0/)
 [![C99](https://img.shields.io/badge/language-C99-blue.svg)](http://www.open-std.org/jtc1/sc22/wg14/www/docs/n1256.pdf)
 [![Github forks](https://img.shields.io/github/forks/awslabs/s2n.svg)](https://github.com/awslabs/s2n/network)
@@ -25,14 +25,14 @@ if (s2n_connection_set_fd(conn, fd) < 0) {
 }
 
 /* Negotiate the TLS handshake */
-int more;
-if (s2n_negotiate(conn, &more) < 0) {
+s2n_blocked_status blocked;
+if (s2n_negotiate(conn, &blocked) < 0) {
     ... error ...
 }
     
 /* Write data to the connection */
 int bytes_written;
-bytes_written = s2n_send(conn, "Hello World", sizeof("Hello World"), &more);
+bytes_written = s2n_send(conn, "Hello World", sizeof("Hello World"), &blocked);
 ```
 
 For details on building the s2n library and how to use s2n in an application you are developing, see the [API Reference](https://github.com/awslabs/s2n/blob/master/docs/USAGE-GUIDE.md).
@@ -82,6 +82,9 @@ The security of TLS and its associated encryption algorithms depends upon secure
 
 ##### Modularized encryption
 s2n has been structured so that different encryption libraries may be used. Today s2n supports OpenSSL, LibreSSL, BoringSSL, and the Apple Common Crypto framework to perform the underlying cryptographic operations.
+
+##### Timing blinding
+s2n includes structured support for blinding time-based side-channels that may leak sensitive data. For example, if s2n fails to parse a TLS record or handshake message, s2n will add a randomized delay of between 10 and 30 seconds, granular to nanoseconds, before responding. This raises the complexity of real-world timing side-channel attacks by a factor of at least tens of trillions. 
 
 ##### Table based state-machines
 s2n uses simple tables to drive the TLS/SSL state machines, making it difficult for invalid out-of-order states to arise. 

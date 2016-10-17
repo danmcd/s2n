@@ -13,7 +13,7 @@
 # permissions and limitations under the License.
 #
 
-OPENSSL_VERSION=$(shell ../libcrypto-root/bin/openssl version 2> /dev/null || echo 1)
+OPENSSL_VERSION=$(shell $(LIBCRYPTO_ROOT)/bin/openssl version 2> /dev/null || echo 1)
 ifeq (${OPENSSL_VERSION}, 1)
 	COMPILE_INFO=Compiled with the missing version of openssl
 else
@@ -26,9 +26,19 @@ all:
 	${MAKE} -C unit
 	@echo "\033[1m ${COMPILE_INFO} \033[0;39m"
 
+.PHONY : integration
+integration:
+	${MAKE} -C integration
+
+.PHONY : fuzz
+fuzz:
+	${MAKE} -C fuzz
+
 include ../s2n.mk
 
 .PHONY : clean
 clean:
 	${MAKE} -C testlib decruft
 	${MAKE} -C unit decruft
+	${MAKE} -C fuzz decruft
+	${MAKE} -C saw decruft

@@ -28,8 +28,8 @@
  *
  */
 
-#define BEGIN_TEST()  int test_count = 0; { fprintf(stdout, "Running %-50s ... ", __FILE__); }
-#define END_TEST()  { if (isatty(fileno(stdout))) { \
+#define BEGIN_TEST() int test_count = 0; EXPECT_SUCCESS(s2n_init()); { fprintf(stdout, "Running %-50s ... ", __FILE__); }
+#define END_TEST()   EXPECT_SUCCESS(s2n_cleanup()); { if (isatty(fileno(stdout))) { \
                             if (test_count) { \
                                 fprintf(stdout, "\033[32;1mPASSED\033[0m %10d tests\n", test_count ); \
                             }\
@@ -51,10 +51,10 @@
 #define FAIL()      FAIL_MSG("");
 
 #define FAIL_MSG( msg ) { if (isatty(fileno(stdout))) { \
-                            fprintf(stdout, "\033[31;1mFAILED test %d\033[0m\n%s (%s line %d)\nError Message: '%s'\n", test_count, (msg),  __FILE__, __LINE__, s2n_strerror(s2n_errno, "EN")); \
+                            fprintf(stdout, "\033[31;1mFAILED test %d\033[0m\n%s (%s line %d)\nError Message: '%s'\n Debug String: '%s'\n", test_count, (msg), __FILE__, __LINE__, s2n_strerror(s2n_errno, "EN"), s2n_debug_str); \
                           } \
                           else { \
-                            fprintf(stdout, "FAILED test %d\n%s (%s line %d)\nError Message: '%s'\n", test_count, (msg), __FILE__, __LINE__, s2n_strerror(s2n_errno, "EN")); \
+                            fprintf(stdout, "FAILED test %d\n%s (%s line %d)\nError Message: '%s'\n Debug String: '%s'\n", test_count, (msg), __FILE__, __LINE__, s2n_strerror(s2n_errno, "EN"), s2n_debug_str); \
                           } \
                           exit(1);  \
                         }

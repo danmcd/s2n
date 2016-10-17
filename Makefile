@@ -16,6 +16,10 @@
 PLATFORM := $(shell uname)
 MAKEFLAGS += PLATFORM=$(PLATFORM)
 
+ifndef LIBCRYPTO_ROOT
+	export LIBCRYPTO_ROOT = $(shell echo "`pwd`/libcrypto-root")
+endif
+
 DIRS=$(wildcard */)
 SRCS=$(wildcard *.c)
 OBJS=$(SRCS:.c=.o)
@@ -23,6 +27,17 @@ OBJS=$(SRCS:.c=.o)
 .PHONY : all
 all: bin
 	$(MAKE) -C tests
+
+bitcode :
+	${MAKE} -C tests/saw bitcode
+
+.PHONY : bc
+bc: 
+	${MAKE} -C crypto bc 
+
+.PHONY : saw
+saw : bc 
+	$(MAKE) -C tests/saw
 
 include s2n.mk
 
@@ -44,6 +59,27 @@ bin: libs
 	$(MAKE) -C crypto
 	$(MAKE) -C tls
 	$(MAKE) -C lib
+
+.PHONY : integration
+integration: bin
+	$(MAKE) -C tests integration
+
+
+.PHONY : fuzz
+ifeq ($(shell uname),Linux)
+fuzz : fuzz-linux
+else
+fuzz : fuzz-osx
+endif
+
+.PHONY : fuzz-osx
+fuzz-osx : 
+	@echo "\033[33;1mSKIPPED\033[0m Fuzzing is not supported on \"$$(uname -mprs)\" at this time."
+
+.PHONY : fuzz-linux
+fuzz-linux : export S2N_UNSAFE_FUZZING_MODE = 1
+fuzz-linux : bin
+	$(MAKE) -C tests fuzz
 
 .PHONY : indent
 indent:

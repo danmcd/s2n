@@ -24,11 +24,10 @@
 /* NULL check a pointer */
 #define notnull_check( ptr )           do { if ( (ptr) == NULL ) { S2N_ERROR(S2N_ERR_NULL); } } while(0)
 
-/* Check memcpy's return, if it's not right (very unlikely!) bail, set an error
- * err and return -1;
+/* Check memcpy and memset's arguments, if these are not right, log an error
  */
-#define memcpy_check( d, s, n )     do { notnull_check( (d) ); memcpy( (d), (s), (n)); } while(0)
-#define memset_check( d, c, n )     do { notnull_check( (d) ); memset( (d), (c), (n)); } while(0)
+#define memcpy_check( d, s, n )     do { if ( (n) ) { notnull_check( (d) ); memcpy( (d), (s), (n)); } } while(0)
+#define memset_check( d, c, n )     do { if ( (n) ) { notnull_check( (d) ); memset( (d), (c), (n)); } } while(0)
 
 /* Range check a number */
 #define gte_check(n, min)  do { if ( (n) < min ) { S2N_ERROR(S2N_ERR_SAFETY); } } while(0)
@@ -52,7 +51,7 @@
 extern pid_t s2n_actual_getpid();
 
 /* Returns 1 if a and b are equal, in constant time */
-extern int s2n_constant_time_equals(const uint8_t *a, const uint8_t *b, uint32_t len);
+extern int s2n_constant_time_equals(const uint8_t * a, const uint8_t * b, uint32_t len);
 
 /* Copy src to dst, or don't copy it, in constant time */
-extern int s2n_constant_time_copy_or_dont(const uint8_t *dst, const uint8_t *src, uint32_t len, uint8_t dont);
+extern int s2n_constant_time_copy_or_dont(const uint8_t * dst, const uint8_t * src, uint32_t len, uint8_t dont);

@@ -8,7 +8,77 @@ git clone https://github.com/awslabs/s2n.git
 cd s2n
 ```
 
-s2n depends on a local copy of libcrypto for certain ciphers.
+## Building s2n with existing libcrypto
+
+To build s2n with an existing libcrypto installation, store its root folder in the
+`LIBCRYPTO_ROOT` environment variable.
+```shell
+# /usr/local/ssl/lib should contain libcrypto.a
+LIBCRYPTO_ROOT=/usr/local/ssl make
+```
+
+## Building s2n with OpenSSL-1.1.0
+
+To build s2n with OpenSSL-1.1.0, do the following:
+
+```shell
+# We keep the build artifacts in the -build directory
+cd libcrypto-build
+
+# Download the latest version of OpenSSL
+curl -LO https://www.openssl.org/source/openssl-1.1.0-latest.tar.gz
+tar -xzvf openssl-1.1.0-latest.tar.gz
+
+# Build openssl' libcrypto  (NOTE: check directory name 1.1.0-latest unpacked as)
+cd openssl-1.1.0a
+./config -fPIC no-shared              \
+         no-md2 no-rc5 no-rfc3779 no-sctp no-ssl-trace no-zlib     \
+         no-hw no-mdc2 no-seed no-idea enable-ec_nistp_64_gcc_128 no-camellia\
+         no-bf no-ripemd no-dsa no-ssl2 no-ssl3 no-capieng                  \
+         -DSSL_FORBID_ENULL -DOPENSSL_NO_DTLS1 -DOPENSSL_NO_HEARTBEATS      \
+         --prefix=`pwd`/../../libcrypto-root/
+make
+make install
+
+# Make to the main s2n directory
+cd ../../
+
+# Build s2n
+make
+```
+
+## Building s2n with OpenSSL-1.0.2
+
+To build s2n with OpenSSL-1.0.2, do the following:
+
+```shell
+# We keep the build artifacts in the -build directory
+cd libcrypto-build
+
+# Download the latest version of OpenSSL
+curl -LO https://www.openssl.org/source/openssl-1.0.2-latest.tar.gz
+tar -xzvf openssl-1.0.2-latest.tar.gz
+
+# Build openssl' libcrypto  (NOTE: check directory name 1.0.2-latest unpacked as)
+cd openssl-1.0.2d
+./config -fPIC no-shared no-libunbound no-gmp no-jpake no-krb5              \
+         no-md2 no-rc5 no-rfc3779 no-sctp no-ssl-trace no-store no-zlib     \
+         no-hw no-mdc2 no-seed no-idea enable-ec-nistp_64_gcc_128 no-camellia\
+         no-bf no-ripemd no-dsa no-ssl2 no-ssl3 no-capieng                  \
+         -DSSL_FORBID_ENULL -DOPENSSL_NO_DTLS1 -DOPENSSL_NO_HEARTBEATS      \
+         --prefix=`pwd`/../../libcrypto-root/
+make depend
+make
+make install
+
+# Make to the main s2n directory
+cd ../../
+
+# Build s2n
+make
+```
+
+**Mac Users:** please replace "./config" with "./Configure darwin64-x86_64-cc".
 
 ## Building s2n with LibreSSL
 
@@ -70,42 +140,6 @@ make
 once built, static and dynamic libraries for s2n will be available in the lib/
 directory.
 
-## Building s2n with OpenSSL-1.0.2
-
-To build s2n with OpenSSL-1.0.2, do the following:
-
-```shell
-# We keep the build artifacts in the -build directory
-cd libcrypto-build
-
-# Download the latest version of OpenSSL
-curl -LO https://www.openssl.org/source/openssl-1.0.2-latest.tar.gz
-tar -xzvf openssl-1.0.2-latest.tar.gz
-
-# Build openssl' libcrypto  (NOTE: check directory name 1.0.2-latest unpacked as)
-cd openssl-1.0.2d
-./config -fPIC no-shared no-libunbound no-gmp no-jpake no-krb5              \
-         no-md2 no-rc5 no-rfc3779 no-sctp no-ssl-trace no-store no-zlib     \
-         no-hw no-mdc2 no-seed no-idea enable-ec-nist_64_gcc_128 no-camellia\
-         no-bf no-ripemd no-dsa no-ssl2 no-ssl3 no-capieng                  \
-         -DSSL_FORBID_ENULL -DOPENSSL_NO_DTLS1 -DOPENSSL_NO_HEARTBEATS      \
-         --prefix=`pwd`/../../libcrypto-root/
-make depend
-make
-make install
-
-# Make to the main s2n directory
-cd ../../
-
-# Build s2n
-make
-```
-
-**Mac Users:** please replace "./config" with "./Configure darwin64-x86_64-cc".
-
-once built, static and dynamic libraries for s2n will be available in the lib/
-directory.
-
 ## mlock() and system limits 
 
 Internally s2n uses mlock() to prevent memory from being swapped to disk. The
@@ -117,6 +151,10 @@ ulimit -l
 ```
 
 to raise the limit, consult the documentation for your platform.
+
+### Disabling mlock()
+To disable s2n's mlock behavior, run your application with the `S2N_DONT_MLOCK` environment variable set. 
+s2n also reads this for unit tests. Try `S2N_DONT_MLOCK=1 make` if you're having mlock failures during unit tests.
 
 ## client mode
 
@@ -158,7 +196,7 @@ but does accept SSL2.0 hello messages.
 
 ## Enums
 
-s2n defines three enum types:
+s2n defines four enum types:
 
 ```c
 typedef enum { S2N_SERVER, S2N_CLIENT } s2n_mode;
@@ -167,6 +205,15 @@ typedef enum { S2N_SERVER, S2N_CLIENT } s2n_mode;
 **s2n_mode** is used to declare connections as server or client type,
 respectively.  At this time, s2n does not function as a client and only
 S2N_SERVER should be used.
+
+```c
+typedef enum { S2N_NOT_BLOCKED, S2N_BLOCKED_ON_READ, S2N_BLOCKED_ON_WRITE } s2n_blocked_status;
+```
+
+**s2n_blocked_status** is used in non-blocking mode to indicate in which
+direction s2n became blocked on I/O before it returned control to the caller.
+This allows an application to avoid retrying s2n operations until I/O is 
+possible in that direction.
 
 ```c
 typedef enum { S2N_BUILT_IN_BLINDING, S2N_SELF_SERVICE_BLINDING } s2n_blinding;
@@ -214,6 +261,60 @@ failure. s2n functions that return pointer types return NULL in the case of
 failure. When an s2n function returns a failure, s2n_errno will be set to a value
 corresponding to the error. This error value can be translated into a string 
 explaining the error in English by calling s2n_strerror(s2n_errno, "EN"); 
+
+Example:
+
+```
+if (s2n_config_set_cipher_preferences(config, prefs) < 0) {
+    printf("Setting cipher prefs failed! %s", (s2n_strerror(s2n_errno, "EN"));
+    return -1;
+}
+```
+
+### Error categories
+
+s2n organizes errors into different "types" to allow applications to do logic on error values without catching all possibilities. 
+Applications using non-blocking I/O should check error type to determine if the I/O operation failed because it would block or for some other error. To retrieve the type for a given error use `s2n_error_get_type()`.
+Applications should perform any error handling logic using these high level types:
+
+```
+S2N_ERR_T_OK=0, /* No error */
+S2N_ERR_T_IO, /* Underlying I/O operation failed, check system errno */
+S2N_ERR_T_CLOSED, /* EOF */
+S2N_ERR_T_BLOCKED, /* Underlying I/O operation would block */
+S2N_ERR_T_ALERT, /* Incoming Alert */
+S2N_ERR_T_PROTO, /* Failure in some part of the TLS protocol. Ex: CBC verification failure */
+S2N_ERR_T_INTERNAL, /* Error internal to s2n. A precondition could have failed. */
+S2N_ERR_T_USAGE /* User input error. Ex: Providing an invalid cipher preference version */
+```
+
+Here's an example that handles errors based on type:
+
+```
+if (s2n_recv(conn, &blocked) < 0) {
+    switch(s2n_error_get_type(s2n_errno)) {
+        case S2N_ERR_T_BLOCKED:
+            /* Blocked, come back later */
+            return -1;
+        case S2N_ERR_T_CLOSED:
+            return 0;
+        case S2N_ERR_T_IO:
+            handle_io_err();
+            return -1;
+        case S2N_ERR_T_PROTO:
+            handle_proto_err();
+            return -1;
+        case S2N_ERR_T_ALERT:
+            log_alert(s2n_connection_get_alert(conn));
+            return -1;
+        /* Everything else */
+        default:
+            log_other_error();
+            return -1;
+    }
+}
+```
+
 
 ## Initialization and teardown
 
@@ -267,7 +368,10 @@ int s2n_config_set_cipher_preferences(struct s2n_config *config,
 
 |    version | SSLv3 | TLS1.0 | TLS1.1 | TLS1.2 | AES-CBC | AES-GCM | 3DES | RC4 | DHE | ECDHE |
 |------------|-------|--------|--------|--------|---------|---------|------|-----|-----|-------|
-| "default"  |       |   X    |    X   |    X   |    X    |    X    |  X   |     |     |   X   |
+| "default"  |       |   X    |    X   |    X   |    X    |    X    |      |     |     |   X   |
+| "20160824" |       |   X    |    X   |    X   |    X    |    X    |      |     |     |   X   |
+| "20160804" |       |   X    |    X   |    X   |    X    |    X    |  X   |     |     |   X   |
+| "20160411" |       |   X    |    X   |    X   |    X    |    X    |  X   |     |     |   X   |
 | "20150306" |       |   X    |    X   |    X   |    X    |    X    |  X   |     |     |   X   |
 | "20150214" |       |   X    |    X   |    X   |    X    |    X    |  X   |     |  X  |       |
 | "20150202" |       |   X    |    X   |    X   |    X    |         |  X   |     |  X  |       |
@@ -275,6 +379,8 @@ int s2n_config_set_cipher_preferences(struct s2n_config *config,
 | "20140601" |   X   |   X    |    X   |    X   |    X    |         |  X   |  X  |  X  |       |
 
 The "default" version is special in that it will be updated with future s2n changes and ciphersuites and protocol versions may be added and removed, or their internal order of preference might change. Numbered versions are fixed and will never change. 
+
+"20160411" follows the same general preference order as "default". The main difference is it has a CBC cipher suite at the top. This is to accomodate certain Java clients that have poor GCM implementations. Users of s2n who have found GCM to be hurting performance for their clients should consider this version.
 
 s2n does not expose an API to control the order of preference for each ciphersuite or protocol version. s2n follows the following order:
 
@@ -350,6 +456,72 @@ int s2n_config_set_status_request_type(struct s2n_config *config, s2n_status_req
 **s2n_config_set_status_request_type** Sets up an S2N_CLIENT to request the
 server certificate status during an SSL handshake.  If set to
 S2N_STATUS_REQUEST_NONE, no status request is made.
+
+### s2n\_config\_set\_nanoseconds\_since\_epoch\_callback
+
+```c
+int s2n_config_set_nanoseconds_since_epoch_callback(struct s2n_config *config, int (*nanoseconds_since_epoch)(void *, uint64_t *), void * data);
+```
+
+**s2n_config_set_nanoseconds_since_epoch_callback** allows the caller to set a
+callback function that will be used to get the time. The callback function
+takes two arguments; a pointer to abitrary data for use within the callback,
+and a pointer to a 64 bit unsigned integer. The first pointer will be set to
+the value of **data** which supplied by the caller when setting the callback.
+The integer pointed to by the second pointer should be set to the number of
+nanoseconds since the Unix epoch (Midnight, January 1st, 1970). The function
+should return 0 on success and -1 on error. The function is also required to 
+implement a monotonic time source; the number of nanoseconds returned should
+never decrease between calls.
+
+## Session Caching related calls
+
+s2n includes support for resuming from cached SSL/TLS session, provided 
+the caller sets (and implements) three callback functions.
+
+### s2n\_config\_set\_cache\_store\_callback
+
+```c
+int s2n_config_set_cache_store_callback(struct s2n_config *config, int (*cache_store)(void *, uint64_t ttl_in_seconds, const void *key, uint64_t key_size, const void *value, uint64_t value_size), void *data);
+```
+
+**s2n_config_set_cache_store_callback** allows the caller to set a callback
+function that will be used to store SSL session data in a cache. The callback
+function takes six arguments: a pointer to abitrary data for use within the
+callback, a 64-bit unsigned integer specifying the number of seconds the
+session data may be stored for, a pointer to a key which can be used to
+retrieve the cached entry, a 64 bit unsigned integer specifying the size of
+this key, a pointer to a value which should be stored, and a 64 bit unsigned
+integer specified the size of this value.
+
+### s2n\_config\_set\_cache\_retrieve\_callback
+
+```c
+int s2n_config_set_cache_retrieve_callback(struct s2n_config *config, int (*cache_retrieve)(void *, const void *key, uint64_t key_size, void *value, uint64_t *value_size), void *data)
+```
+
+**s2n_config_set_cache_retrieve_callback** allows the caller to set a callback
+function that will be used to retrieve SSL session data from a cache. The
+callback function takes five arguments: a pointer to abitrary data for use
+within the callback, a pointer to a key which can be used to retrieve the
+cached entry, a 64 bit unsigned integer specifying the size of this key, a
+pointer to a memory location where the value should be stored,
+and a pointer to a 64 bit unsigned integer specifing the size of this value.
+Initially *value_size will be set to the amount of space allocated for
+the value, the callback should set *value_size to the actual size of the
+data returned. If there is insufficient space, -1 should be returned.
+
+### s2n\_config\_set\_cache\_delete\_callback
+
+```c
+int s2n_config_set_cache_delete_callback(struct s2n_config *config, int (*cache_delete))(void *, const void *key, uint64_t key_size), void *data);
+```
+
+**s2n_config_set_cache_delete_callback** allows the caller to set a callback
+function that will be used to delete SSL session data from a cache. The
+callback function takes three arguments: a pointer to abitrary data for use
+within the callback, a pointer to a key which can be used to delete the
+cached entry, and a 64 bit unsigned integer specifying the size of this key.
 
 ## Connection-oriented functions
 
@@ -437,6 +609,21 @@ int64_t s2n_connection_get_delay(struct s2n_connection *conn);
 **s2n_connection_get_delay** returns the number of nanoseconds an application
 using self-service blinding should pause before calling close() or shutdown().
 
+### s2n\_connection\_prefer\_throughput(struct s2n_connection *conn)
+
+```c
+int s2n_connection_prefer_throughput(struct s2n_connection *conn);
+int s2n_connection_prefer_low_latency(struct s2n_connection *conn);
+```
+
+**s2n_connection_prefer_throughput** and **s2n_connection_prefer_low_latency**
+change the behavior of s2n when sending data to prefer either throughput
+or low latency. Connections prefering low latency will be encrypted using small
+record sizes that can be decrypted sooner by the recipient. Connections
+prefering throughput will use large record sizes that minimize overhead.
+
+Connections prefer low latency by default.
+
 ### s2n\_connection\_get\_wire\_bytes
 
 ```c
@@ -503,7 +690,7 @@ const char * s2n_connection_get_cipher(struct s2n_connection *conn);
 ```
 
 **s2n_connection_get_cipher** returns a string indicating the cipher suite
-negotiated by s2n for a connection, e.g. "TLS\_RSA\_WITH\_AES\_128\_CBC\_SHA".
+negotiated by s2n for a connection in Openssl format, e.g. "ECDHE-RSA-AES128-GCM-SHA256".
 
 ### s2n\_connection\_wipe
 
@@ -529,16 +716,17 @@ s2n supports both blocking and non-blocking I/O. To use s2n in non-blocking
 mode, set the underlying file descriptors as non-blocking (i.e. with
 **fcntl**). In blocking mode, each s2n I/O function will not return until it is
 complete. In non-blocking mode an s2n I/O function may return while there is
-still I/O pending. In this case the value of the **more** parameter will be set
-to 1.
+still I/O pending. In this case the value of the **blocked** parameter will be set
+to either **S2N_BLOCKED_ON_READ** or **S2N_BLOCKED_ON_WRITE**, depending on the
+direction in which s2n is blocked.
 
-s2n I/O functions should be called repeatedly until the **more** parameter is
-zero. 
+s2n I/O functions should be called repeatedly until the **blocked** parameter is
+**S2N_NOT_BLOCKED**. 
 
 ### s2n\_negotiate
 
 ```c
-int s2n_negotiate(struct s2n_connection *conn, int *more);
+int s2n_negotiate(struct s2n_connection *conn, s2n_blocked_status *blocked);
 ```
 
 **s2n_negotiate** performs the initial "handshake" phase of a TLS connection and must be called before any **s2n_recv** or **s2n_send** calls.
@@ -549,22 +737,23 @@ int s2n_negotiate(struct s2n_connection *conn, int *more);
 ssize_t s2n_send(struct s2n_connection *conn 
               void *buf,
               ssize_t size,
-              int *more);
+              s2n_blocked_status *blocked);
 ```
 
 **s2n_send** writes and encrypts **size* of **buf** data to the associated connection. **s2n_send** will return the number of bytes written, and may indicate a partial write. Partial writes are possible not just for non-blocking I/O, but also for connections aborted while active. **NOTE:** Unlike OpenSSL, repeated calls to **s2n_send** should not duplicate the original parameters, but should update **buf** and **size** per the indication of size written. For example;
 
 ```c
-int more, written = 0;
+s2n_blocked_status blocked;
+int written = 0;
 char data[10]; /* Some data we want to write */
 do {
-    int w = s2n_send(conn, data + written, 10 - written, &more);
+    int w = s2n_send(conn, data + written, 10 - written, &blocked);
     if (w < 0) {
         /* Some kind of error */
         break;
     }
     written += w;
-} while (more); 
+} while (blocked != S2N_NOT_BLOCKED); 
 ```    
 
 ### s2n\_recv
@@ -573,7 +762,7 @@ do {
 ssize_t s2n_recv(struct s2n_connection *conn,
              void *buf,
              ssize_t size,
-             int *more);
+             s2n_blocked_status *blocked);
 ```
 
 **s2n_recv** decrypts and reads **size* to **buf** data from the associated
@@ -583,23 +772,24 @@ connection. **s2n_recv** will return the number of bytes read and also return
 **NOTE:** Unlike OpenSSL, repeated calls to **s2n_recv** should not duplicate the original parameters, but should update **buf** and **size** per the indication of size read. For example;
 
 ```c
-int more, bytes_read = 0;
+s2n_blocked_status blocked;
+int bytes_read = 0;
 char data[10];
 do {
-    int r = s2n_recv(conn, data + bytes_read, 10 - bytes_read, &more);
+    int r = s2n_recv(conn, data + bytes_read, 10 - bytes_read, &blocked);
     if (r < 0) {
         /* Some kind of error */
         break;
     }
     bytes_read += r;
-} while (more);
+} while (blocked != S2N_NOT_BLOCKED);
 ```
 
 ### s2n_shutdown
 
 ```c
 int s2n_shutdown(struct s2n_connection *conn,
-                 int *more);
+                 s2n_blocked_status *blocked);
 ```
 
 **s2n_shutdown** shuts down the s2n connection. Once a connection has been shut down it is not available for reading or writing.

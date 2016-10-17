@@ -19,13 +19,20 @@ ifeq ($(PLATFORM),Darwin)
 else ifeq ($(PLATFORM),FreeBSD)
     LIBS = -lthr
     CRYPTO_LIBS = -lcrypto
+else ifeq ($(PLATFORM),NetBSD)
+    LIBS = -lpthread
+    CRYPTO_LIBS = -lcrypto
 else
     LIBS = -lpthread -ldl -lrt
     CRYPTO_LIBS = -lcrypto
 endif
 
+CC	= $(CROSS_COMPILE)gcc
+AR	= $(CROSS_COMPILE)ar
+RANLIB	= $(CROSS_COMPILE)ranlib
+
 SOURCES = $(wildcard *.c *.h)
-CRUFT   = $(wildcard *.c~ *.h~ *.c.BAK *.h.BAK *.o *.a *.so *.dylib)
+CRUFT   = $(wildcard *.c~ *.h~ *.c.BAK *.h.BAK *.o *.a *.so *.dylib *.bc)
 INDENT  = $(shell (if indent --version 2>&1 | grep GNU > /dev/null; then echo indent ; elif gindent --version 2>&1 | grep GNU > /dev/null; then echo gindent; else echo true ; fi ))
 
 CFLAGS = -pedantic -Wall -Werror -Wimplicit -Wunused -Wcomment -Wchar-subscripts -Wuninitialized \

@@ -14,6 +14,7 @@
  */
 
 #include <stdint.h>
+#include <sys/param.h>
 
 #include "error/s2n_errno.h"
 
@@ -108,10 +109,8 @@ int s2n_record_write(struct s2n_connection *conn, uint8_t content_type, struct s
     /* Before we do anything, we need to figure out what the length of the
      * fragment is going to be. 
      */
-    uint16_t data_bytes_to_take = in->size;
-    if (data_bytes_to_take > s2n_record_max_write_payload_size(conn)) {
-        data_bytes_to_take = s2n_record_max_write_payload_size(conn);
-    }
+    uint16_t data_bytes_to_take = MIN(in->size, s2n_record_max_write_payload_size(conn));
+
     uint16_t extra = overhead(conn);
 
     /* If we have padding to worry about, figure that out too */
@@ -180,7 +179,7 @@ int s2n_record_write(struct s2n_connection *conn, uint8_t content_type, struct s
     }
 
     /* We are done with this sequence number, so we can increment it */
-    struct s2n_blob seq = {.data = sequence_number, .size = S2N_TLS_SEQUENCE_NUM_LEN };
+    struct s2n_blob seq = {.data = sequence_number,.size = S2N_TLS_SEQUENCE_NUM_LEN };
     GUARD(s2n_increment_sequence_number(&seq));
 
     /* Write the plaintext data */
@@ -215,7 +214,7 @@ int s2n_record_write(struct s2n_connection *conn, uint8_t content_type, struct s
     uint16_t encrypted_length = data_bytes_to_take + mac_digest_size;
 
     if (cipher_suite->cipher->type == S2N_AEAD) {
-        encrypted_length += cipher_suite->cipher->io.aead.record_iv_size;
+        GUARD(s2n_stuffer_skip_write(&conn->out, cipher_suite->cipher->io.aead.record_iv_size));
         encrypted_length += cipher_suite->cipher->io.aead.tag_size;
     }
 
@@ -242,14 +241,16 @@ int s2n_record_write(struct s2n_connection *conn, uint8_t content_type, struct s
         GUARD(cipher_suite->cipher->io.cbc.encrypt(session_key, &iv, &en, &en));
 
         /* Copy the last encrypted block to be the next IV */
-        gte_check(en.size, block_size);
-        memcpy_check(implicit_iv, en.data + en.size - block_size, block_size);
+        if (conn->actual_protocol_version < S2N_TLS11) {
+            gte_check(en.size, block_size);
+            memcpy_check(implicit_iv, en.data + en.size - block_size, block_size);
+        }
         break;
     case S2N_AEAD:
         GUARD(cipher_suite->cipher->io.aead.encrypt(session_key, &iv, &aad, &en, &en));
         break;
     default:
-        return -1;
+        S2N_ERROR(S2N_ERR_CIPHER_TYPE);
         break;
     }
 

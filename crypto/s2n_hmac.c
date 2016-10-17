@@ -172,8 +172,28 @@ int s2n_hmac_init(struct s2n_hmac_state *state, s2n_hmac_algorithm alg, const vo
 
 int s2n_hmac_update(struct s2n_hmac_state *state, const void *in, uint32_t size)
 {
-    /* Keep track of how much of the current hash block is full */
-    state->currently_in_hash_block += (128000 + size) % state->hash_block_size;
+    /* Keep track of how much of the current hash block is full
+     *
+     * Why the 4294949760 constant in this code? 4294949760 is the highest 32-bit
+     * value that is congruent to 0 modulo all of our HMAC block sizes, that is also
+     * at least 16k smaller than 2^32. It therefore has no effect on the mathematical
+     * result, and no valid record size can cause it to overflow.
+     * 
+     * The value was found with the following python code;
+     * 
+     * x = (2 ** 32) - (2 ** 14)
+     * while True:
+     *   if x % 40 | x % 48 | x % 64 | x % 128 == 0:
+     *     break
+     *   x -= 1
+     * print x
+     *
+     * What it does do however is ensure that the mod operation takes a
+     * constant number of instruction cycles, regardless of the size of the
+     * input. On some platforms, including Intel, the operation can take a
+     * smaller number of cycles if the input is "small".
+     */
+    state->currently_in_hash_block += (4294949760 + size) % state->hash_block_size;
     state->currently_in_hash_block %= state->block_size;
 
     return s2n_hash_update(&state->inner, in, size);
@@ -197,14 +217,13 @@ int s2n_hmac_digest_two_compression_rounds(struct s2n_hmac_state *state, void *o
 {
     GUARD(s2n_hmac_digest(state, out, size));
 
-    /* If there were 8 or more bytes of space left in the current hash block
-     * then the serialized length will have fit in that block. If there were
-     * fewer than 8 then adding the length will have caused an extra compression
-     * block round. This digest function always does two compression rounds,
+    /* If there were 9 or more bytes of space left in the current hash block
+     * then the serialized length, plus an 0x80 byte, will have fit in that block. 
+     * If there were fewer than 9 then adding the length will have caused an extra 
+     * compression block round. This digest function always does two compression rounds,
      * even if there is no need for the second.
      */
-    if (state->currently_in_hash_block > (state->hash_block_size - 8))
-    {
+    if (state->currently_in_hash_block > (state->hash_block_size - 9)) {
         return 0;
     }
 
@@ -213,14 +232,15 @@ int s2n_hmac_digest_two_compression_rounds(struct s2n_hmac_state *state, void *o
 
 int s2n_hmac_reset(struct s2n_hmac_state *state)
 {
+    state->currently_in_hash_block = 0;
     memcpy_check(&state->inner, &state->inner_just_key, sizeof(state->inner));
 
     return 0;
 }
 
-int s2n_hmac_digest_verify(const void *a, uint32_t alen, const void *b, uint32_t blen)
+int s2n_hmac_digest_verify(const void *a, const void *b, uint32_t len)
 {
-    return 0 - (!s2n_constant_time_equals(a, b, alen) | !!(alen - blen));
+    return 0 - !s2n_constant_time_equals(a, b, len);
 }
 
 int s2n_hmac_copy(struct s2n_hmac_state *to, struct s2n_hmac_state *from)

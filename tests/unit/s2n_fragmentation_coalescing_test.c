@@ -158,12 +158,14 @@ uint8_t heartbeat_message[] = {
 };
 
 uint8_t warning_alert[] = {       /* warning: user cancelled */
-    0x02, 0x50
+    0x02, 0x5a
 };
 
 uint8_t fatal_alert[] = {       /* Fatal: unexpected message */
     0x01, 0x0a
 };
+
+extern message_type_t s2n_conn_get_current_message_type(struct s2n_connection *conn);
 
 void fragmented_message(int write_fd)
 {
@@ -392,6 +394,7 @@ void interleaved_fragmented_warning_alert(int write_fd)
 int main(int argc, char **argv)
 {
     struct s2n_connection *conn;
+    s2n_blocked_status blocked;
     int status;
     pid_t pid;
     int p[2];
@@ -400,6 +403,9 @@ int main(int argc, char **argv)
 
     EXPECT_SUCCESS(setenv("S2N_ENABLE_CLIENT_MODE", "1", 0));
     EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_CLIENT));
+    conn->server_protocol_version = S2N_TLS12;
+    conn->client_protocol_version = S2N_TLS12;
+    conn->actual_protocol_version = S2N_TLS12;
 
     /* Create a pipe */
     EXPECT_SUCCESS(pipe(p));
@@ -408,7 +414,8 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(s2n_connection_set_read_fd(conn, p[0]));
 
     /* Pretend the client hello has already been set */
-    conn->handshake.state = SERVER_HELLO;
+    conn->handshake.handshake_type = NEGOTIATED | FULL_HANDSHAKE;
+    conn->handshake.message_number = SERVER_HELLO;
 
     /* Create a child process */
     pid = fork();
@@ -426,13 +433,13 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(close(p[1]));
 
     /* Negotiate the handshake. This will fail due to EOF, but that's ok. */
-    EXPECT_FAILURE(s2n_negotiate(conn, &status));
+    EXPECT_FAILURE(s2n_negotiate(conn, &blocked));
 
     /* Verify that the data is as we expect it */
-    EXPECT_EQUAL(memcmp(conn->pending.server_random, zero_to_thirty_one, 32), 0);
+    EXPECT_EQUAL(memcmp(conn->secure.server_random, zero_to_thirty_one, 32), 0);
 
     /* Check that the server hello message was processed */
-    EXPECT_EQUAL(conn->handshake.state, SERVER_CERT);
+    EXPECT_EQUAL(s2n_conn_get_current_message_type(conn), SERVER_CERT);
 
     /* Clean up */
     EXPECT_EQUAL(waitpid(pid, &status, 0), pid);
@@ -444,12 +451,16 @@ int main(int argc, char **argv)
 
     /* Wipe the connection */
     EXPECT_SUCCESS(s2n_connection_wipe(conn));
+    conn->server_protocol_version = S2N_TLS12;
+    conn->client_protocol_version = S2N_TLS12;
+    conn->actual_protocol_version = S2N_TLS12;
 
     /* Set up the connection to read from the fd */
     EXPECT_SUCCESS(s2n_connection_set_read_fd(conn, p[0]));
 
     /* Pretend the client hello has already been set */
-    conn->handshake.state = SERVER_HELLO;
+    conn->handshake.handshake_type = NEGOTIATED | FULL_HANDSHAKE;
+    conn->handshake.message_number = SERVER_HELLO;
 
     /* Create a child process */
     pid = fork();
@@ -467,13 +478,13 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(close(p[1]));
 
     /* Negotiate the handshake. This will fail due to EOF, but that's ok. */
-    EXPECT_FAILURE(s2n_negotiate(conn, &status));
+    EXPECT_FAILURE(s2n_negotiate(conn, &blocked));
 
     /* Verify that the data is as we expect it */
-    EXPECT_EQUAL(memcmp(conn->pending.server_random, zero_to_thirty_one, 32), 0);
+    EXPECT_EQUAL(memcmp(conn->secure.server_random, zero_to_thirty_one, 32), 0);
 
     /* Check that the server done message was processed */
-    EXPECT_EQUAL(conn->handshake.state, SERVER_HELLO_DONE);
+    EXPECT_EQUAL(s2n_conn_get_current_message_type(conn), SERVER_HELLO_DONE);
 
     /* Clean up */
     EXPECT_EQUAL(waitpid(pid, &status, 0), pid);
@@ -485,12 +496,16 @@ int main(int argc, char **argv)
 
     /* Wipe the connection */
     EXPECT_SUCCESS(s2n_connection_wipe(conn));
+    conn->server_protocol_version = S2N_TLS12;
+    conn->client_protocol_version = S2N_TLS12;
+    conn->actual_protocol_version = S2N_TLS12;
 
     /* Set up the connection to read from the fd */
     EXPECT_SUCCESS(s2n_connection_set_read_fd(conn, p[0]));
 
     /* Pretend the client hello has already been set */
-    conn->handshake.state = SERVER_HELLO;
+    conn->handshake.handshake_type = NEGOTIATED | FULL_HANDSHAKE;
+    conn->handshake.message_number = SERVER_HELLO;
 
     /* Create a child process */
     pid = fork();
@@ -508,13 +523,13 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(close(p[1]));
 
     /* Negotiate the handshake. This will fail due to EOF, but that's ok. */
-    EXPECT_FAILURE(s2n_negotiate(conn, &status));
+    EXPECT_FAILURE(s2n_negotiate(conn, &blocked));
 
     /* Verify that the data is as we expect it */
-    EXPECT_EQUAL(memcmp(conn->pending.server_random, zero_to_thirty_one, 32), 0);
+    EXPECT_EQUAL(memcmp(conn->secure.server_random, zero_to_thirty_one, 32), 0);
 
     /* Check that the server hello message was processed */
-    EXPECT_EQUAL(conn->handshake.state, SERVER_CERT);
+    EXPECT_EQUAL(s2n_conn_get_current_message_type(conn), SERVER_CERT);
 
     /* Clean up */
     EXPECT_EQUAL(waitpid(pid, &status, 0), pid);
@@ -526,12 +541,16 @@ int main(int argc, char **argv)
 
     /* Wipe the connection */
     EXPECT_SUCCESS(s2n_connection_wipe(conn));
+    conn->server_protocol_version = S2N_TLS12;
+    conn->client_protocol_version = S2N_TLS12;
+    conn->actual_protocol_version = S2N_TLS12;
 
     /* Set up the connection to read from the fd */
     EXPECT_SUCCESS(s2n_connection_set_read_fd(conn, p[0]));
 
     /* Pretend the client hello has already been set */
-    conn->handshake.state = SERVER_HELLO;
+    conn->handshake.handshake_type = NEGOTIATED | FULL_HANDSHAKE;
+    conn->handshake.message_number = SERVER_HELLO;
 
     /* Create a child process */
     pid = fork();
@@ -549,13 +568,13 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(close(p[1]));
 
     /* Negotiate the handshake. This will fail due to EOF, but that's ok. */
-    EXPECT_FAILURE(s2n_negotiate(conn, &status));
+    EXPECT_FAILURE(s2n_negotiate(conn, &blocked));
 
     /* Verify that the data is as we expect it */
-    EXPECT_NOT_EQUAL(memcmp(conn->pending.server_random, zero_to_thirty_one, 32), 0);
+    EXPECT_NOT_EQUAL(memcmp(conn->secure.server_random, zero_to_thirty_one, 32), 0);
 
     /* Check that the server hello message was not processed */
-    EXPECT_EQUAL(conn->handshake.state, SERVER_HELLO);
+    EXPECT_EQUAL(s2n_conn_get_current_message_type(conn), SERVER_HELLO);
 
     /* Clean up */
     EXPECT_EQUAL(waitpid(pid, &status, 0), pid);
@@ -567,12 +586,16 @@ int main(int argc, char **argv)
 
     /* Wipe the connection */
     EXPECT_SUCCESS(s2n_connection_wipe(conn));
+    conn->server_protocol_version = S2N_TLS12;
+    conn->client_protocol_version = S2N_TLS12;
+    conn->actual_protocol_version = S2N_TLS12;
 
     /* Set up the connection to read from the fd */
     EXPECT_SUCCESS(s2n_connection_set_read_fd(conn, p[0]));
 
     /* Pretend the client hello has already been set */
-    conn->handshake.state = SERVER_HELLO;
+    conn->handshake.handshake_type = NEGOTIATED | FULL_HANDSHAKE;
+    conn->handshake.message_number = SERVER_HELLO;
 
     /* Create a child process */
     pid = fork();
@@ -590,13 +613,13 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(close(p[1]));
 
     /* Negotiate the handshake. This will fail due to EOF, but that's ok. */
-    EXPECT_FAILURE(s2n_negotiate(conn, &status));
+    EXPECT_FAILURE(s2n_negotiate(conn, &blocked));
 
     /* Verify that the data failed */
-    EXPECT_NOT_EQUAL(memcmp(conn->pending.server_random, zero_to_thirty_one, 32), 0);
+    EXPECT_NOT_EQUAL(memcmp(conn->secure.server_random, zero_to_thirty_one, 32), 0);
 
     /* Check that the server hello message was not processed */
-    EXPECT_NOT_EQUAL(conn->handshake.state, SERVER_CERT);
+    EXPECT_NOT_EQUAL(s2n_conn_get_current_message_type(conn), SERVER_CERT);
 
     /* Clean up */
     EXPECT_EQUAL(waitpid(pid, &status, 0), pid);

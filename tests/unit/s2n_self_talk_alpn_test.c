@@ -18,6 +18,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <fcntl.h>
 
 #include <s2n.h>
 
@@ -79,18 +80,39 @@ static char dhparams[] =
     "gzucyS7jt1bobgU66JKkgMNm7hJY4/nhR5LWTCzZyzYQh2HM2Vk4K5ZqILpj/n0S\n"
     "5JYTQ2PVhxP+Uu8+hICs/8VvM72DznjPZzufADipjC7CsQ4S6x/ecZluFtbb+ZTv\n" "HI5CnYmkAwJ6+FSWGaZQDi8bgerFk9RWwwIBAg==\n" "-----END DH PARAMETERS-----\n";
 
+int mock_nanoseconds_since_epoch(void *data, uint64_t *nanoseconds)
+{
+    static int called = 0;
+
+    /* When first called return 0 seconds */
+    *nanoseconds = 0;
+
+    /* When next called return 31 seconds */
+    if (called) {
+        *nanoseconds += (uint64_t) 31 * 1000000000;
+    }
+
+    called = 1;
+
+    return 0;
+}
+
 int mock_client(int writefd, int readfd, const char **protocols, int count, const char *expected)
 {
     char buffer[0xffff];
     struct s2n_connection *conn;
     struct s2n_config *config;
-    int more;
+    s2n_blocked_status blocked;
     int result = 0;
 
     /* Give the server a chance to listen */
     sleep(1);
 
     conn = s2n_connection_new(S2N_CLIENT);
+    conn->server_protocol_version = S2N_TLS12;
+    conn->client_protocol_version = S2N_TLS12;
+    conn->actual_protocol_version = S2N_TLS12;
+
     config = s2n_config_new();
     s2n_config_set_protocol_preferences(config, protocols, count);
     s2n_connection_set_config(conn, config);
@@ -98,7 +120,7 @@ int mock_client(int writefd, int readfd, const char **protocols, int count, cons
     s2n_connection_set_read_fd(conn, readfd);
     s2n_connection_set_write_fd(conn, writefd);
 
-    result = s2n_negotiate(conn, &more);
+    result = s2n_negotiate(conn, &blocked);
     if (result < 0) {
         result = 1;
     }
@@ -115,9 +137,14 @@ int mock_client(int writefd, int readfd, const char **protocols, int count, cons
             buffer[j] = 33;
         }
         
-        s2n_send(conn, buffer, i, &more);
+        s2n_send(conn, buffer, i, &blocked);
     }
     
+    int shutdown_rc= -1;
+    do {
+        shutdown_rc = s2n_shutdown(conn, &blocked);
+    } while(shutdown_rc != 0);
+
     s2n_connection_free(conn);
 
     /* Give the server a chance to a void a sigpipe */
@@ -131,6 +158,7 @@ int main(int argc, char **argv)
     char buffer[0xffff];
     struct s2n_connection *conn;
     struct s2n_config *config;
+    s2n_blocked_status blocked;
     int status;
     pid_t pid;
     int server_to_client[2];
@@ -143,7 +171,6 @@ int main(int argc, char **argv)
 
     EXPECT_SUCCESS(setenv("S2N_ENABLE_CLIENT_MODE", "1", 0));
 
-    EXPECT_SUCCESS(s2n_init());
     EXPECT_NOT_NULL(config = s2n_config_new());
     EXPECT_SUCCESS(s2n_config_set_protocol_preferences(config, protocols, 2));
     EXPECT_SUCCESS(s2n_config_add_cert_chain_and_key(config, certificate, private_key));
@@ -171,6 +198,10 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(close(server_to_client[0]));
 
     EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+    conn->server_protocol_version = S2N_TLS12;
+    conn->client_protocol_version = S2N_TLS12;
+    conn->actual_protocol_version = S2N_TLS12;
+
     EXPECT_SUCCESS(s2n_connection_set_config(conn, config));
 
     /* Set up the connection to read from the fd */
@@ -178,18 +209,18 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(s2n_connection_set_write_fd(conn, server_to_client[1]));
 
     /* Negotiate the handshake. */
-    EXPECT_SUCCESS(s2n_negotiate(conn, &status));
+    EXPECT_SUCCESS(s2n_negotiate(conn, &blocked));
 
     /* Expect NULL negotiated protocol */
     EXPECT_EQUAL(s2n_get_application_protocol(conn), NULL);
 
     for (int i = 1; i < 0xffff; i += 100) {
         char * ptr = buffer;
-        int bytes_read = 0;
         int size = i;
 
         do {
-            EXPECT_SUCCESS(bytes_read = s2n_recv(conn, ptr, size, &status));
+            int bytes_read = 0;
+            EXPECT_SUCCESS(bytes_read = s2n_recv(conn, ptr, size, &blocked));
 
             size -= bytes_read;
             ptr += bytes_read;
@@ -200,7 +231,7 @@ int main(int argc, char **argv)
         }
     }
 
-    EXPECT_SUCCESS(s2n_shutdown(conn, &status));
+    EXPECT_SUCCESS(s2n_shutdown(conn, &blocked));
     EXPECT_SUCCESS(s2n_connection_free(conn));
 
     /* Clean up */
@@ -229,6 +260,9 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(close(server_to_client[0]));
 
     EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+    conn->server_protocol_version = S2N_TLS12;
+    conn->client_protocol_version = S2N_TLS12;
+    conn->actual_protocol_version = S2N_TLS12;
     EXPECT_SUCCESS(s2n_connection_set_config(conn, config));
 
     /* Set up the connection to read from the fd */
@@ -236,18 +270,18 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(s2n_connection_set_write_fd(conn, server_to_client[1]));
 
     /* Negotiate the handshake. */
-    EXPECT_SUCCESS(s2n_negotiate(conn, &status));
+    EXPECT_SUCCESS(s2n_negotiate(conn, &blocked));
 
     /* Expect our most prefered negotiated protocol */
     EXPECT_STRING_EQUAL(s2n_get_application_protocol(conn), protocols[0]);
 
     for (int i = 1; i < 0xffff; i += 100) {
         char * ptr = buffer;
-        int bytes_read = 0;
         int size = i;
 
         do {
-            EXPECT_SUCCESS(bytes_read = s2n_recv(conn, ptr, size, &status));
+            int bytes_read = 0;
+            EXPECT_SUCCESS(bytes_read = s2n_recv(conn, ptr, size, &blocked));
 
             size -= bytes_read;
             ptr += bytes_read;
@@ -258,7 +292,7 @@ int main(int argc, char **argv)
         }
     }
 
-    EXPECT_SUCCESS(s2n_shutdown(conn, &status));
+    EXPECT_SUCCESS(s2n_shutdown(conn, &blocked));
     EXPECT_SUCCESS(s2n_connection_free(conn));
 
     /* Clean up */
@@ -286,6 +320,9 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(close(server_to_client[0]));
 
     EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+    conn->server_protocol_version = S2N_TLS12;
+    conn->client_protocol_version = S2N_TLS12;
+    conn->actual_protocol_version = S2N_TLS12;
     EXPECT_SUCCESS(s2n_connection_set_config(conn, config));
 
     /* Set up the connection to read from the fd */
@@ -293,15 +330,16 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(s2n_connection_set_write_fd(conn, server_to_client[1]));
 
     /* Negotiate the handshake. */
-    EXPECT_SUCCESS(s2n_negotiate(conn, &status));
+
+    EXPECT_SUCCESS(s2n_negotiate(conn, &blocked));
 
     for (int i = 1; i < 0xffff; i += 100) {
         char * ptr = buffer;
-        int bytes_read = 0;
         int size = i;
 
         do {
-            EXPECT_SUCCESS(bytes_read = s2n_recv(conn, ptr, size, &status));
+            int bytes_read = 0;
+            EXPECT_SUCCESS(bytes_read = s2n_recv(conn, ptr, size, &blocked));
 
             size -= bytes_read;
             ptr += bytes_read;
@@ -315,7 +353,7 @@ int main(int argc, char **argv)
     /* Expect our least prefered negotiated protocol */
     EXPECT_STRING_EQUAL(s2n_get_application_protocol(conn), protocols[1]);
 
-    EXPECT_SUCCESS(s2n_shutdown(conn, &status));
+    EXPECT_SUCCESS(s2n_shutdown(conn, &blocked));
     EXPECT_SUCCESS(s2n_connection_free(conn));
 
     /* Clean up */
@@ -326,6 +364,10 @@ int main(int argc, char **argv)
     /* Create a pipe */
     EXPECT_SUCCESS(pipe(server_to_client));
     EXPECT_SUCCESS(pipe(client_to_server));
+    for (int i = 0; i < 2; i++) {
+        EXPECT_NOT_EQUAL(fcntl(server_to_client[i], F_SETFL, fcntl(server_to_client[i], F_GETFL) | O_NONBLOCK), -1);
+        EXPECT_NOT_EQUAL(fcntl(client_to_server[i], F_SETFL, fcntl(client_to_server[i], F_GETFL) | O_NONBLOCK), -1);
+    }
 
     /* Create a child process */
     pid = fork();
@@ -344,19 +386,31 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(close(server_to_client[0]));
 
     EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+    conn->server_protocol_version = S2N_TLS12;
+    conn->client_protocol_version = S2N_TLS12;
+    conn->actual_protocol_version = S2N_TLS12;
     EXPECT_SUCCESS(s2n_connection_set_config(conn, config));
 
     /* Set up the connection to read from the fd */
     EXPECT_SUCCESS(s2n_connection_set_read_fd(conn, client_to_server[0]));
     EXPECT_SUCCESS(s2n_connection_set_write_fd(conn, server_to_client[1]));
 
+    /* s2n_negotiate will fail, which ordinarily would delay with a sleep. 
+     * Remove the sleep and fake the delay with a mock time routine */
+    EXPECT_SUCCESS(s2n_connection_set_blinding(conn, S2N_SELF_SERVICE_BLINDING));
+    EXPECT_SUCCESS(s2n_config_set_nanoseconds_since_epoch_callback(config, mock_nanoseconds_since_epoch, NULL));
+
     /* Negotiate the handshake. */
-    EXPECT_FAILURE(s2n_negotiate(conn, &status));
+    int negotiate_rc;
+    do {
+        negotiate_rc = s2n_negotiate(conn, &blocked);
+    } while(errno == EAGAIN && blocked);
+    EXPECT_TRUE(negotiate_rc == -1 && s2n_errno == S2N_ERR_NO_APPLICATION_PROTOCOL);
 
     /* Expect NULL negotiated protocol */
     EXPECT_EQUAL(s2n_get_application_protocol(conn), NULL);
 
-    EXPECT_SUCCESS(s2n_shutdown(conn, &status));
+    /* Negotiation failed. Free the connection without shutdown */
     EXPECT_SUCCESS(s2n_connection_free(conn));
 
     /* Close the pipes */

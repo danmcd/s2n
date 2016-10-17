@@ -1,22 +1,62 @@
+sudo: true
+language: c
+
+addons:
+    apt:
+      sources:
+        - ubuntu-toolchain-r-test
+      packages:
+        - gcc-6
+        - g++-6
+        - indent
+        - cppcheck
+
+osx_image: xcode8
+
 os:
   - osx
   - linux
+
 compiler:
   - gcc
   - clang
 
-before_script:
-  - cd libcrypto-build
-  - curl -L https://www.openssl.org/source/openssl-1.0.2-latest.tar.gz > openssl-1.0.2.tar.gz
-  - tar -xzvf openssl-1.0.2.tar.gz
-  - rm openssl-1.0.2.tar.gz
-  - cd openssl-1.0.2*
-  - (test "$TRAVIS_OS_NAME" = "linux" && ./config -fPIC no-shared no-libunbound no-gmp no-jpake no-krb5 no-md2 no-rc5 no-rfc3779 no-sctp no-ssl-trace no-store no-zlib no-hw no-mdc2 no-seed no-idea enable-ec-nist_64_gcc_128 no-camellia no-bf no-ripemd no-dsa no-ssl2 no-ssl3 no-capieng -DSSL_FORBID_ENULL -DOPENSSL_NO_DTLS1 -DOPENSSL_NO_HEARTBEATS --prefix=`pwd`/../../libcrypto-root/) || true
-  - (test "$TRAVIS_OS_NAME" = "osx" && ./Configure darwin64-x86_64-cc -fPIC --prefix=`pwd`/../../libcrypto-root/) || true
-  - make depend
-  - make
-  - make install
+before_install:
+  # Install GCC 6 if on OSX
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then   brew update                ; fi
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then   brew tap homebrew/versions ; fi
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then   brew install gcc6          ; fi
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then   brew install gnu-indent    ; fi
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then   brew install cppcheck      ; fi
+  # Set GCC 6 as Default on both Ubuntu and OSX
+  - alias gcc=$(which gcc-6)
+  # Install latest version of clang, clang++, and llvm-symbolizer and add them to beginning of PATH. Needed for fuzzing.
+  - (.travis/install_clang.sh `pwd`/clang-download `pwd`/clang-latest $TRAVIS_OS_NAME) && export PATH=`pwd`/clang-latest/bin:$PATH
+
+  # Install SAW on Linux only 
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then curl http://saw.galois.com/builds/nightly/saw-0.2-2016-07-22-Ubuntu14.04-64.tar.gz > saw.tar.gz; tar -xzf saw.tar.gz; fi
+  - export PATH=$PATH:$PWD/saw-0.2-2016-07-22-Ubuntu14.04-64/bin
+
+  # Install Z3
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then sudo add-apt-repository ppa:hvr/z3 -y > /dev/null; sudo apt-key -qq update /dev/null; sudo apt-get -qq update; fi
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then sudo apt-get -qq install z3 -y --force-yes; fi
+
+install:
+  # Download and Install LibFuzzer
+  - .travis/install_libFuzzer.sh `pwd`/fuzz_dependencies/libFuzzer-download `pwd`/fuzz_dependencies $TRAVIS_OS_NAME
+  # Download and Install Openssl
+  - .travis/install_openssl.sh `pwd`/libcrypto-build `pwd`/libcrypto-root $TRAVIS_OS_NAME > /dev/null
+  # Install python linked with our compiled Openssl for integration tests
+  - sudo "PATH=$PATH" .travis/install_python.sh `pwd`/libcrypto-root > /dev/null
+  # Install prlimit to set the memlock limit to unlimited for this process
+  - (test "$TRAVIS_OS_NAME" = "linux" && sudo "PATH=$PATH" .travis/install_prlimit.sh $PWD/.travis > /dev/null && sudo .travis/prlimit --pid "$$" --memlock=unlimited:unlimited) || true
+  - mkdir -p .travis/checker && .travis/install_scan-build.sh .travis/checker && export PATH=$PATH:.travis/checker/bin
+  - .travis/run_cppcheck.sh
 
 script:
-  - cd ../../
-  - make
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then make -j 8   ; fi
+  # Build and run unit tests with scan-build for osx. scan-build bundle isn't available for linux
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then   scan-build --status-bugs -o /tmp/scan-build make -j8; STATUS=$?; test $STATUS -ne 0 && cat /tmp/scan-build/*/* ; [ "$STATUS" -eq "0" ] ; fi
+  - make integration
+  - make clean && make fuzz
+  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then export PATH="/usr/local/clang-3.4/bin/":$PATH; echo $PATH; which clang; clang --version; llvm-link --version; make saw; fi 

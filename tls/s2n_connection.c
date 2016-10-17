@@ -34,8 +34,14 @@
 
 #include "utils/s2n_random.h"
 #include "utils/s2n_safety.h"
+#include "utils/s2n_socket.h"
+#include "utils/s2n_timer.h"
 #include "utils/s2n_blob.h"
 #include "utils/s2n_mem.h"
+
+#define GCC_VERSION (__GNUC__ * 10000 \
+                     + __GNUC_MINOR__ * 100 \
+                     + __GNUC_PATCHLEVEL__)
 
 struct s2n_connection *s2n_connection_new(s2n_mode mode)
 {
@@ -53,7 +59,7 @@ struct s2n_connection *s2n_connection_new(s2n_mode mode)
          * variable is required to be set for the client mode to work.
          */
         if (getenv("S2N_ENABLE_CLIENT_MODE") == NULL) {
-            s2n_free(&blob);
+            GUARD_PTR(s2n_free(&blob));
             S2N_ERROR_PTR(S2N_ERR_CLIENT_MODE_DISABLED);
         }
     }
@@ -65,6 +71,8 @@ struct s2n_connection *s2n_connection_new(s2n_mode mode)
     conn->mode = mode;
     conn->blinding = S2N_BUILT_IN_BLINDING;
     conn->config = &s2n_default_config;
+    conn->close_notify_queued = 0;
+    conn->session_id_len = 0;
 
     /* Allocate the fixed-size stuffers */
     blob.data = conn->alert_in_data;
@@ -81,7 +89,13 @@ struct s2n_connection *s2n_connection_new(s2n_mode mode)
     blob.size = S2N_ALERT_LENGTH;
 
     GUARD_PTR(s2n_stuffer_init(&conn->writer_alert_out, &blob));
-    GUARD_PTR(s2n_stuffer_alloc(&conn->out, S2N_DEFAULT_RECORD_LENGTH));
+    GUARD_PTR(s2n_stuffer_alloc(&conn->out, S2N_LARGE_RECORD_LENGTH));
+
+    /* Allocate long term key memory */
+    GUARD_PTR(s2n_session_key_alloc(&conn->secure.client_key));
+    GUARD_PTR(s2n_session_key_alloc(&conn->secure.server_key));
+    GUARD_PTR(s2n_session_key_alloc(&conn->initial.client_key));
+    GUARD_PTR(s2n_session_key_alloc(&conn->initial.server_key));
 
     /* Initialize the growable stuffers. Zero length at first, but the resize
      * in _wipe will fix that 
@@ -93,45 +107,36 @@ struct s2n_connection *s2n_connection_new(s2n_mode mode)
     GUARD_PTR(s2n_stuffer_growable_alloc(&conn->in, 0));
     GUARD_PTR(s2n_stuffer_growable_alloc(&conn->handshake.io, 0));
     GUARD_PTR(s2n_connection_wipe(conn));
+    GUARD_PTR(s2n_timer_start(conn->config, &conn->write_timer));
 
     return conn;
 }
 
 static int s2n_connection_free_keys(struct s2n_connection *conn)
 {
-    /* Destroy any keys - we call destroy on the pending object as that is where
-     * keys are allocated. */
-    if (conn->pending.cipher_suite && conn->pending.cipher_suite->cipher->destroy_key) {
-        GUARD(conn->pending.cipher_suite->cipher->destroy_key(&conn->pending.client_key));
-        GUARD(conn->pending.cipher_suite->cipher->destroy_key(&conn->pending.server_key));
-    }
-
-    /* Free any pending server key received (we may not have completed a
-     * handshake, so this may not have been free'd yet) */
-    GUARD(s2n_rsa_public_key_free(&conn->pending.server_rsa_public_key));
-
-    GUARD(s2n_dh_params_free(&conn->pending.server_dh_params));
-    GUARD(s2n_dh_params_free(&conn->active.server_dh_params));
-    GUARD(s2n_ecc_params_free(&conn->pending.server_ecc_params));
-    GUARD(s2n_ecc_params_free(&conn->active.server_ecc_params));
-
-    GUARD(s2n_free(&conn->status_response));
+    GUARD(s2n_session_key_free(&conn->secure.client_key));
+    GUARD(s2n_session_key_free(&conn->secure.server_key));
+    GUARD(s2n_session_key_free(&conn->initial.client_key));
+    GUARD(s2n_session_key_free(&conn->initial.server_key));
 
     return 0;
 }
 
-int s2n_shutdown(struct s2n_connection *conn, int *more)
+static int s2n_connection_wipe_keys(struct s2n_connection *conn)
 {
-    /* Write any pending I/O */
-    GUARD(s2n_flush(conn, more));
+    /* Destroy any keys - we call destroy on the object as that is where
+     * keys are allocated. */
+    if (conn->secure.cipher_suite && conn->secure.cipher_suite->cipher->destroy_key) {
+        GUARD(conn->secure.cipher_suite->cipher->destroy_key(&conn->secure.client_key));
+        GUARD(conn->secure.cipher_suite->cipher->destroy_key(&conn->secure.server_key));
+    }
 
-    GUARD(s2n_queue_writer_close_alert(conn));
+    /* Free any server key received (we may not have completed a
+     * handshake, so this may not have been free'd yet) */
+    GUARD(s2n_rsa_public_key_free(&conn->secure.server_rsa_public_key));
 
-    /* Write the alert message out */
-    GUARD(s2n_flush(conn, more));
-
-    /* Wipe the connection */
-    GUARD(s2n_connection_wipe(conn));
+    GUARD(s2n_dh_params_free(&conn->secure.server_dh_params));
+    GUARD(s2n_ecc_params_free(&conn->secure.server_ecc_params));
 
     return 0;
 }
@@ -140,8 +145,10 @@ int s2n_connection_free(struct s2n_connection *conn)
 {
     struct s2n_blob blob;
 
+    GUARD(s2n_connection_wipe_keys(conn));
     GUARD(s2n_connection_free_keys(conn));
 
+    GUARD(s2n_free(&conn->status_response));
     GUARD(s2n_stuffer_free(&conn->in));
     GUARD(s2n_stuffer_free(&conn->out));
     GUARD(s2n_stuffer_free(&conn->handshake.io));
@@ -173,9 +180,14 @@ int s2n_connection_wipe(struct s2n_connection *conn)
     struct s2n_stuffer header_in;
     struct s2n_stuffer in;
     struct s2n_stuffer out;
+    /* Session keys will be wiped. Preserve structs to avoid reallocation */
+    struct s2n_session_key initial_client_key;
+    struct s2n_session_key initial_server_key;
+    struct s2n_session_key secure_client_key;
+    struct s2n_session_key secure_server_key;
 
     /* Wipe all of the sensitive stuff */
-    GUARD(s2n_connection_free_keys(conn));
+    GUARD(s2n_connection_wipe_keys(conn));
     GUARD(s2n_stuffer_wipe(&conn->alert_in));
     GUARD(s2n_stuffer_wipe(&conn->reader_alert_out));
     GUARD(s2n_stuffer_wipe(&conn->writer_alert_out));
@@ -184,16 +196,24 @@ int s2n_connection_wipe(struct s2n_connection *conn)
     GUARD(s2n_stuffer_wipe(&conn->in));
     GUARD(s2n_stuffer_wipe(&conn->out));
 
+    /* Restore the socket option values */
+    GUARD(s2n_socket_read_restore(conn));
+    GUARD(s2n_socket_write_restore(conn));
+    GUARD(s2n_free(&conn->status_response));
+
     /* Allocate or resize to their original sizes */
-    GUARD(s2n_stuffer_resize(&conn->in, S2N_DEFAULT_FRAGMENT_LENGTH));
+    GUARD(s2n_stuffer_resize(&conn->in, S2N_LARGE_FRAGMENT_LENGTH));
 
     /* Allocate memory for handling handshakes */
-    GUARD(s2n_stuffer_resize(&conn->handshake.io, S2N_DEFAULT_RECORD_LENGTH));
+    GUARD(s2n_stuffer_resize(&conn->handshake.io, S2N_LARGE_RECORD_LENGTH));
 
     /* Clone the stuffers */
     /* ignore gcc 4.7 address warnings because dest is allocated on the stack */
+    /* pragma gcc diagnostic was added in gcc 4.6 */
+#if defined(__GNUC__) && GCC_VERSION >= 40600
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Waddress"
+#endif
     memcpy_check(&alert_in, &conn->alert_in, sizeof(struct s2n_stuffer));
     memcpy_check(&reader_alert_out, &conn->reader_alert_out, sizeof(struct s2n_stuffer));
     memcpy_check(&writer_alert_out, &conn->writer_alert_out, sizeof(struct s2n_stuffer));
@@ -201,7 +221,13 @@ int s2n_connection_wipe(struct s2n_connection *conn)
     memcpy_check(&header_in, &conn->header_in, sizeof(struct s2n_stuffer));
     memcpy_check(&in, &conn->in, sizeof(struct s2n_stuffer));
     memcpy_check(&out, &conn->out, sizeof(struct s2n_stuffer));
+    memcpy_check(&initial_client_key, &conn->initial.client_key, sizeof(struct s2n_session_key));
+    memcpy_check(&initial_server_key, &conn->initial.server_key, sizeof(struct s2n_session_key));
+    memcpy_check(&secure_client_key, &conn->secure.client_key, sizeof(struct s2n_session_key));
+    memcpy_check(&secure_server_key, &conn->secure.server_key, sizeof(struct s2n_session_key));
+#if defined(__GNUC__) && GCC_VERSION >= 40600
 #pragma GCC diagnostic pop
+#endif
 
     /* Zero the whole connection structure */
     memset_check(conn, 0, sizeof(struct s2n_connection));
@@ -210,18 +236,19 @@ int s2n_connection_wipe(struct s2n_connection *conn)
     conn->writefd = -1;
     conn->mode = mode;
     conn->config = config;
-    conn->active.cipher_suite = &s2n_null_cipher_suite;
-    conn->pending.cipher_suite = &s2n_null_cipher_suite;
-    conn->server = &conn->active;
-    conn->client = &conn->active;
-    conn->max_fragment_length = S2N_DEFAULT_FRAGMENT_LENGTH;
-    conn->handshake.state = CLIENT_HELLO;
-    GUARD(s2n_hash_init(&conn->handshake.client_md5, S2N_HASH_MD5));
-    GUARD(s2n_hash_init(&conn->handshake.client_sha1, S2N_HASH_SHA1));
-    GUARD(s2n_hash_init(&conn->handshake.client_sha256, S2N_HASH_SHA256));
-    GUARD(s2n_hash_init(&conn->handshake.server_md5, S2N_HASH_MD5));
-    GUARD(s2n_hash_init(&conn->handshake.server_sha1, S2N_HASH_SHA1));
-    GUARD(s2n_hash_init(&conn->handshake.server_sha256, S2N_HASH_SHA256));
+    conn->close_notify_queued = 0;
+    conn->current_user_data_consumed = 0;
+    conn->initial.cipher_suite = &s2n_null_cipher_suite;
+    conn->secure.cipher_suite = &s2n_null_cipher_suite;
+    conn->server = &conn->initial;
+    conn->client = &conn->initial;
+    conn->max_fragment_length = S2N_SMALL_FRAGMENT_LENGTH;
+    conn->handshake.handshake_type = INITIAL;
+    conn->handshake.message_number = 0;
+    GUARD(s2n_hash_init(&conn->handshake.md5, S2N_HASH_MD5));
+    GUARD(s2n_hash_init(&conn->handshake.sha1, S2N_HASH_SHA1));
+    GUARD(s2n_hash_init(&conn->handshake.sha256, S2N_HASH_SHA256));
+    GUARD(s2n_hash_init(&conn->handshake.sha384, S2N_HASH_SHA384));
     GUARD(s2n_hmac_init(&conn->client->client_record_mac, S2N_HMAC_NONE, NULL, 0));
     GUARD(s2n_hmac_init(&conn->server->server_record_mac, S2N_HMAC_NONE, NULL, 0));
 
@@ -232,11 +259,20 @@ int s2n_connection_wipe(struct s2n_connection *conn)
     memcpy_check(&conn->header_in, &header_in, sizeof(struct s2n_stuffer));
     memcpy_check(&conn->in, &in, sizeof(struct s2n_stuffer));
     memcpy_check(&conn->out, &out, sizeof(struct s2n_stuffer));
+    memcpy_check(&conn->initial.client_key, &initial_client_key, sizeof(struct s2n_session_key));
+    memcpy_check(&conn->initial.server_key, &initial_server_key, sizeof(struct s2n_session_key));
+    memcpy_check(&conn->secure.client_key, &secure_client_key, sizeof(struct s2n_session_key));
+    memcpy_check(&conn->secure.server_key, &secure_server_key, sizeof(struct s2n_session_key));
 
-    /* Set everything to the highest version at first */
-    conn->server_protocol_version = s2n_highest_protocol_version;
-    conn->client_protocol_version = s2n_highest_protocol_version;
-    conn->actual_protocol_version = s2n_highest_protocol_version;
+    if (conn->mode == S2N_SERVER) {
+        conn->server_protocol_version = s2n_highest_protocol_version;
+        conn->client_protocol_version = s2n_unknown_protocol_version;
+    }
+    else {
+        conn->server_protocol_version = s2n_unknown_protocol_version;
+        conn->client_protocol_version = s2n_highest_protocol_version;
+    }
+    conn->actual_protocol_version = s2n_unknown_protocol_version;
 
     return 0;
 }
@@ -244,12 +280,18 @@ int s2n_connection_wipe(struct s2n_connection *conn)
 int s2n_connection_set_read_fd(struct s2n_connection *conn, int rfd)
 {
     conn->readfd = rfd;
+
+    GUARD(s2n_socket_read_snapshot(conn));
+
     return 0;
 }
 
 int s2n_connection_set_write_fd(struct s2n_connection *conn, int wfd)
 {
     conn->writefd = wfd;
+
+    GUARD(s2n_socket_write_snapshot(conn));
+
     return 0;
 }
 
@@ -260,19 +302,19 @@ int s2n_connection_set_fd(struct s2n_connection *conn, int fd)
     return 0;
 }
 
-uint64_t s2n_connection_get_wire_bytes_in(struct s2n_connection *conn)
+uint64_t s2n_connection_get_wire_bytes_in(struct s2n_connection * conn)
 {
     return conn->wire_bytes_in;
 }
 
-uint64_t s2n_connection_get_wire_bytes_out(struct s2n_connection *conn)
+uint64_t s2n_connection_get_wire_bytes_out(struct s2n_connection * conn)
 {
     return conn->wire_bytes_out;
 }
 
 const char *s2n_connection_get_cipher(struct s2n_connection *conn)
 {
-    return conn->active.cipher_suite->name;
+    return conn->secure.cipher_suite->name;
 }
 
 int s2n_connection_get_client_protocol_version(struct s2n_connection *conn)
@@ -317,7 +359,6 @@ int s2n_set_server_name(struct s2n_connection *conn, const char *server_name)
     int len = strlen(server_name);
     if (len > 255) {
         S2N_ERROR(S2N_ERR_SERVER_NAME_TOO_LONG);
-        return -1;
     }
 
     memcpy_check(conn->server_name, server_name, len);
@@ -349,23 +390,41 @@ int s2n_connection_set_blinding(struct s2n_connection *conn, s2n_blinding blindi
     return 0;
 }
 
-#define ONE_MS INT64_C(1000000)
 #define ONE_S  INT64_C(1000000000)
 #define TEN_S  INT64_C(10000000000)
 
-int64_t s2n_connection_get_delay(struct s2n_connection *conn)
+uint64_t s2n_connection_get_delay(struct s2n_connection * conn)
 {
-    /* Delay between 1ms and 10 seconds in nanoseconds */
-    int64_t min = ONE_MS, max = TEN_S;
-    return min + s2n_public_random(max - min);
+    if (!conn->delay) {
+        return 0;
+    }
+
+    uint64_t elapsed;
+    GUARD(s2n_timer_elapsed(conn->config, &conn->write_timer, &elapsed));
+
+    if (elapsed > conn->delay) {
+        return 0;
+    }
+
+    return conn->delay - elapsed;
 }
 
-int s2n_sleep_delay(struct s2n_connection *conn)
+int s2n_connection_kill(struct s2n_connection *conn)
 {
+    conn->closed = 1;
+
+    /* Delay between 10 and 30 seconds in nanoseconds */
+    int64_t min = TEN_S, max = 3 * TEN_S;
+
+    /* Keep track of the delay so that it can be enforced */
+    conn->delay = min + s2n_public_random(max - min);
+
+    /* Restart the write timer */
+    GUARD(s2n_timer_start(conn->config, &conn->write_timer));
+
     if (conn->blinding == S2N_BUILT_IN_BLINDING) {
-        int delay, r;
-        GUARD(delay = s2n_connection_get_delay(conn));
-        struct timespec sleep_time = { .tv_sec = delay / ONE_S, .tv_nsec = delay % ONE_S };
+        struct timespec sleep_time = {.tv_sec = conn->delay / ONE_S,.tv_nsec = conn->delay % ONE_S };
+        int r;
 
         do {
             r = nanosleep(&sleep_time, &sleep_time);
@@ -376,7 +435,7 @@ int s2n_sleep_delay(struct s2n_connection *conn)
     return 0;
 }
 
-const uint8_t *s2n_connection_get_ocsp_response(struct s2n_connection *conn, uint32_t *length)
+const uint8_t *s2n_connection_get_ocsp_response(struct s2n_connection *conn, uint32_t * length)
 {
     if (!length) {
         return NULL;
@@ -384,4 +443,18 @@ const uint8_t *s2n_connection_get_ocsp_response(struct s2n_connection *conn, uin
 
     *length = conn->status_response.size;
     return conn->status_response.data;
+}
+
+int s2n_connection_prefer_throughput(struct s2n_connection *conn)
+{
+    conn->max_fragment_length = S2N_LARGE_FRAGMENT_LENGTH;
+
+    return 0;
+}
+
+int s2n_connection_prefer_low_latency(struct s2n_connection *conn)
+{
+    conn->max_fragment_length = S2N_SMALL_FRAGMENT_LENGTH;
+
+    return 0;
 }

@@ -13,6 +13,7 @@
  * permissions and limitations under the License.
  */
 
+#include <sys/param.h>
 #include <stdint.h>
 
 #include "error/s2n_errno.h"
@@ -36,27 +37,31 @@
  *
  * The goal of s2n_verify_cbc() is to verify that the padding and hmac
  * are correct, without leaking (via timing) how much padding there
- * actually is: this is considered secret. 
+ * actually is: as this is considered secret. 
+ *
+ * In addition to our efforts here though, s2n also wraps any CBC
+ * verification error (or record parsing error in general) with
+ * a randomized delay of between 1ms and 10 seconds. See s2n_connection.c.
+ * This amount of delay randomization is sufficient to increase the
+ * complexity of attack for even a 1 microsecond timing leak (which
+ * is quite large) by a factor of around 83 trillion.
  */
 int s2n_verify_cbc(struct s2n_connection *conn, struct s2n_hmac_state *hmac, struct s2n_blob *decrypted)
 {
     struct s2n_hmac_state copy;
 
     int mac_digest_size = s2n_hmac_digest_size(hmac->alg);
-    
+
     /* The record has to be at least big enough to contain the MAC,
      * plus the padding length byte */
     gt_check(decrypted->size, mac_digest_size);
-    
+
     int payload_and_padding_size = decrypted->size - mac_digest_size;
 
     /* Determine what the padding length is */
     uint8_t padding_length = decrypted->data[decrypted->size - 1];
 
-    int payload_length = payload_and_padding_size - padding_length - 1;
-    if (payload_length < 0) {
-        payload_length = 0;
-    }
+    int payload_length = MAX(payload_and_padding_size - padding_length - 1, 0);
 
     /* Update the MAC */
     GUARD(s2n_hmac_update(hmac, decrypted->data, payload_length));
@@ -72,19 +77,16 @@ int s2n_verify_cbc(struct s2n_connection *conn, struct s2n_hmac_state *hmac, str
     /* Compute a MAC on the rest of the data so that we perform the same number of hash operations */
     GUARD(s2n_hmac_update(&copy, decrypted->data + payload_length + mac_digest_size, decrypted->size - payload_length - mac_digest_size - 1));
 
-    /* SSLv3 doesn't specify what the padding should actualy be */
+    /* SSLv3 doesn't specify what the padding should actually be */
     if (conn->actual_protocol_version == S2N_SSLv3) {
         return 0 - mismatches;
     }
 
-    /* Check the padding */
-    int check = 255;
-    if (check > payload_and_padding_size) {
-        check = payload_and_padding_size;
-    }
+    /* Check the maximum amount that could theoritically be padding */
+    int check = MIN(255, (payload_and_padding_size - 1));
 
     int cutoff = check - padding_length;
-    for (int i = 0, j = decrypted->size - check; i < check && j < decrypted->size; i++, j++) {
+    for (int i = 0, j = decrypted->size - 1 - check; i < check && j < decrypted->size; i++, j++) {
         uint8_t mask = ~(0xff << ((i >= cutoff) * 8));
         mismatches |= (decrypted->data[j] ^ padding_length) & mask;
     }

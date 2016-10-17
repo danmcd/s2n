@@ -34,7 +34,7 @@
 #include "utils/s2n_random.h"
 #include "utils/s2n_blob.h"
 
-int s2n_sslv2_record_header_parse(struct s2n_connection *conn, uint8_t *record_type, uint8_t *client_protocol_version, uint16_t *fragment_length)
+int s2n_sslv2_record_header_parse(struct s2n_connection *conn, uint8_t * record_type, uint8_t * client_protocol_version, uint16_t * fragment_length)
 {
     struct s2n_stuffer *in = &conn->header_in;
 
@@ -57,7 +57,7 @@ int s2n_sslv2_record_header_parse(struct s2n_connection *conn, uint8_t *record_t
     return 0;
 }
 
-int s2n_record_header_parse(struct s2n_connection *conn, uint8_t *content_type, uint16_t *fragment_length)
+int s2n_record_header_parse(struct s2n_connection *conn, uint8_t * content_type, uint16_t * fragment_length)
 {
     struct s2n_stuffer *in = &conn->header_in;
 
@@ -93,9 +93,9 @@ int s2n_record_parse(struct s2n_connection *conn)
     struct s2n_blob iv;
     struct s2n_blob en;
     struct s2n_blob aad;
-    uint8_t ivpad[16];
     uint8_t content_type;
     uint16_t fragment_length;
+    uint8_t ivpad[S2N_TLS_MAX_IV_LEN];
     uint8_t aad_gen[S2N_TLS_MAX_AAD_LEN] = { 0 };
     uint8_t aad_iv[S2N_TLS_MAX_IV_LEN] = { 0 };
 
@@ -160,9 +160,6 @@ int s2n_record_parse(struct s2n_connection *conn)
         /* Set the IV size to the amount of data written */
         iv.size = s2n_stuffer_data_available(&iv_stuffer);
 
-        iv.data = aad_iv;
-        iv.size = cipher_suite->cipher->io.aead.fixed_iv_size + cipher_suite->cipher->io.aead.record_iv_size;
-
         aad.data = aad_gen;
         aad.size = sizeof(aad_gen);
 
@@ -186,38 +183,39 @@ int s2n_record_parse(struct s2n_connection *conn)
         ne_check(en.size, 0);
 
         /* ... and that we have a multiple of the block size */
-        eq_check(en.size % iv.size,  0);
+        eq_check(en.size % iv.size, 0);
 
         /* Copy the last encrypted block to be the next IV */
-        memcpy_check(ivpad, en.data + en.size - iv.size, iv.size);
+        if (conn->actual_protocol_version < S2N_TLS11) {
+            memcpy_check(ivpad, en.data + en.size - iv.size, iv.size);
+        }
 
         GUARD(cipher_suite->cipher->io.cbc.decrypt(session_key, &iv, &en, &en));
 
-        memcpy_check(implicit_iv, ivpad, iv.size);
+        if (conn->actual_protocol_version < S2N_TLS11) {
+            memcpy_check(implicit_iv, ivpad, iv.size);
+        }
         break;
     case S2N_AEAD:
+        /* Skip explicit IV for decryption */
+        en.size -= cipher_suite->cipher->io.aead.record_iv_size;
+        en.data += cipher_suite->cipher->io.aead.record_iv_size;
+
         /* Check that we have some data to decrypt */
         ne_check(en.size, 0);
 
         GUARD(cipher_suite->cipher->io.aead.decrypt(session_key, &iv, &aad, &en, &en));
         break;
     default:
-        return -1;
+        S2N_ERROR(S2N_ERR_CIPHER_TYPE);
         break;
     }
 
-    int offset = 0;
-
-    /* Skip the explicit IV */
-    if (cipher_suite->cipher->type == S2N_AEAD) {
-        gt_check(en.size, cipher_suite->cipher->io.aead.record_iv_size);
-        offset = cipher_suite->cipher->io.aead.record_iv_size;
-    }
     /* Subtract the padding length */
-    else if (cipher_suite->cipher->type == S2N_CBC) {
+    if (cipher_suite->cipher->type == S2N_CBC) {
         gt_check(en.size, 0);
         payload_length -= (en.data[en.size - 1] + 1);
-    } 
+    }
 
     /* Update the MAC */
     header[3] = (payload_length >> 8);
@@ -232,7 +230,7 @@ int s2n_record_parse(struct s2n_connection *conn)
         GUARD(s2n_hmac_update(mac, header, S2N_TLS_RECORD_HEADER_LENGTH));
     }
 
-    struct s2n_blob seq = {.data = sequence_number, .size = S2N_TLS_SEQUENCE_NUM_LEN };
+    struct s2n_blob seq = {.data = sequence_number,.size = S2N_TLS_SEQUENCE_NUM_LEN };
     GUARD(s2n_increment_sequence_number(&seq));
 
     /* Padding */
@@ -240,20 +238,18 @@ int s2n_record_parse(struct s2n_connection *conn)
         if (s2n_verify_cbc(conn, mac, &en) < 0) {
             GUARD(s2n_stuffer_wipe(&conn->in));
             S2N_ERROR(S2N_ERR_BAD_MESSAGE);
-            return -1;
         }
     } else {
         /* MAC check for streaming ciphers - no padding */
-        GUARD(s2n_hmac_update(mac, en.data + offset, payload_length));
+        GUARD(s2n_hmac_update(mac, en.data, payload_length));
 
         uint8_t check_digest[S2N_MAX_DIGEST_LEN];
         lte_check(mac_digest_size, sizeof(check_digest));
         GUARD(s2n_hmac_digest(mac, check_digest, mac_digest_size));
 
-        if (s2n_hmac_digest_verify(en.data + payload_length + offset, mac_digest_size, check_digest, mac_digest_size) < 0) {
+        if (s2n_hmac_digest_verify(en.data + payload_length, check_digest, mac_digest_size) < 0) {
             GUARD(s2n_stuffer_wipe(&conn->in));
             S2N_ERROR(S2N_ERR_BAD_MESSAGE);
-            return -1;
         }
     }
 

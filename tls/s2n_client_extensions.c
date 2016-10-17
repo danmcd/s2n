@@ -26,12 +26,13 @@
 #include "utils/s2n_safety.h"
 #include "utils/s2n_blob.h"
 
-static int s2n_server_name_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension);
-static int s2n_signature_algorithms_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension);
-static int s2n_alpn_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension);
-static int s2n_status_request_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension);
-static int s2n_elliptic_curves_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension);
-static int s2n_ec_point_formats_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension);
+static int s2n_recv_client_server_name(struct s2n_connection *conn, struct s2n_stuffer *extension);
+static int s2n_recv_client_signature_algorithms(struct s2n_connection *conn, struct s2n_stuffer *extension);
+static int s2n_recv_client_alpn(struct s2n_connection *conn, struct s2n_stuffer *extension);
+static int s2n_recv_client_status_request(struct s2n_connection *conn, struct s2n_stuffer *extension);
+static int s2n_recv_client_elliptic_curves(struct s2n_connection *conn, struct s2n_stuffer *extension);
+static int s2n_recv_client_ec_point_formats(struct s2n_connection *conn, struct s2n_stuffer *extension);
+static int s2n_recv_client_renegotiation_info(struct s2n_connection *conn, struct s2n_stuffer *extension);
 
 int s2n_client_extensions_send(struct s2n_connection *conn, struct s2n_stuffer *out)
 {
@@ -103,7 +104,7 @@ int s2n_client_extensions_send(struct s2n_connection *conn, struct s2n_stuffer *
         eq_check(conn->config->status_request_type, S2N_STATUS_REQUEST_OCSP);
         GUARD(s2n_stuffer_write_uint16(out, TLS_EXTENSION_STATUS_REQUEST));
         GUARD(s2n_stuffer_write_uint16(out, 5));
-        GUARD(s2n_stuffer_write_uint8(out, (uint8_t)conn->config->status_request_type));
+        GUARD(s2n_stuffer_write_uint8(out, (uint8_t) conn->config->status_request_type));
         GUARD(s2n_stuffer_write_uint16(out, 0));
         GUARD(s2n_stuffer_write_uint16(out, 0));
     }
@@ -158,30 +159,33 @@ int s2n_client_extensions_recv(struct s2n_connection *conn, struct s2n_blob *ext
 
         switch (extension_type) {
         case TLS_EXTENSION_SERVER_NAME:
-            GUARD(s2n_server_name_rcv(conn, &extension));
+            GUARD(s2n_recv_client_server_name(conn, &extension));
             break;
         case TLS_EXTENSION_SIGNATURE_ALGORITHMS:
-            GUARD(s2n_signature_algorithms_rcv(conn, &extension));
+            GUARD(s2n_recv_client_signature_algorithms(conn, &extension));
             break;
         case TLS_EXTENSION_ALPN:
-            GUARD(s2n_alpn_rcv(conn, &extension));
+            GUARD(s2n_recv_client_alpn(conn, &extension));
             break;
         case TLS_EXTENSION_STATUS_REQUEST:
-            GUARD(s2n_status_request_rcv(conn, &extension));
+            GUARD(s2n_recv_client_status_request(conn, &extension));
             break;
         case TLS_EXTENSION_ELLIPTIC_CURVES:
-            GUARD(s2n_elliptic_curves_rcv(conn, &extension));
+            GUARD(s2n_recv_client_elliptic_curves(conn, &extension));
             break;
         case TLS_EXTENSION_EC_POINT_FORMATS:
-            GUARD(s2n_ec_point_formats_rcv(conn, &extension));
+            GUARD(s2n_recv_client_ec_point_formats(conn, &extension));
             break;
-       }
+        case TLS_EXTENSION_RENEGOTIATION_INFO:
+            GUARD(s2n_recv_client_renegotiation_info(conn, &extension));
+            break;
+        }
     }
 
     return 0;
 }
 
-static int s2n_server_name_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension)
+static int s2n_recv_client_server_name(struct s2n_connection *conn, struct s2n_stuffer *extension)
 {
     uint16_t size_of_all;
     uint8_t server_name_type;
@@ -218,7 +222,7 @@ static int s2n_server_name_rcv(struct s2n_connection *conn, struct s2n_stuffer *
     return 0;
 }
 
-static int s2n_signature_algorithms_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension)
+static int s2n_recv_client_signature_algorithms(struct s2n_connection *conn, struct s2n_stuffer *extension)
 {
     uint16_t length_of_all_pairs;
     GUARD(s2n_stuffer_read_uint16(extension, &length_of_all_pairs));
@@ -249,7 +253,7 @@ static int s2n_signature_algorithms_rcv(struct s2n_connection *conn, struct s2n_
     S2N_ERROR(S2N_ERR_INVALID_SIGNATURE_ALGORITHM);
 }
 
-static int s2n_alpn_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension)
+static int s2n_recv_client_alpn(struct s2n_connection *conn, struct s2n_stuffer *extension)
 {
     uint16_t size_of_all;
     struct s2n_stuffer client_protos;
@@ -286,19 +290,20 @@ static int s2n_alpn_rcv(struct s2n_connection *conn, struct s2n_stuffer *extensi
 
         while (s2n_stuffer_data_available(&client_protos)) {
             uint8_t client_length;
-            uint8_t client_protocol[255];
             GUARD(s2n_stuffer_read_uint8(&client_protos, &client_length));
             if (client_length > s2n_stuffer_data_available(&client_protos)) {
                 S2N_ERROR(S2N_ERR_BAD_MESSAGE);
             }
             if (client_length != length) {
                 GUARD(s2n_stuffer_skip_read(&client_protos, client_length));
-            }
-            GUARD(s2n_stuffer_read_bytes(&client_protos, client_protocol, client_length));
-            if (memcmp(client_protocol, protocol, client_length) == 0) {
-                memcpy_check(conn->application_protocol, client_protocol, client_length);
-                conn->application_protocol[client_length] = '\0';
-                return 0;
+            } else {
+                uint8_t client_protocol[255];
+                GUARD(s2n_stuffer_read_bytes(&client_protos, client_protocol, client_length));
+                if (memcmp(client_protocol, protocol, client_length) == 0) {
+                    memcpy_check(conn->application_protocol, client_protocol, client_length);
+                    conn->application_protocol[client_length] = '\0';
+                    return 0;
+                }
             }
         }
 
@@ -308,7 +313,7 @@ static int s2n_alpn_rcv(struct s2n_connection *conn, struct s2n_stuffer *extensi
     S2N_ERROR(S2N_ERR_NO_APPLICATION_PROTOCOL);
 }
 
-static int s2n_status_request_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension)
+static int s2n_recv_client_status_request(struct s2n_connection *conn, struct s2n_stuffer *extension)
 {
     uint16_t size_of_all;
     GUARD(s2n_stuffer_read_uint16(extension, &size_of_all));
@@ -318,15 +323,15 @@ static int s2n_status_request_rcv(struct s2n_connection *conn, struct s2n_stuffe
     }
     uint8_t type;
     GUARD(s2n_stuffer_read_uint8(extension, &type));
-    if (type != (uint8_t)S2N_STATUS_REQUEST_OCSP) {
+    if (type != (uint8_t) S2N_STATUS_REQUEST_OCSP) {
         /* We only support OCSP (type 1), ignore the extension */
         return 0;
     }
-    conn->status_type = (s2n_status_request_type)type;
+    conn->status_type = (s2n_status_request_type) type;
     return 0;
 }
 
-static int s2n_elliptic_curves_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension)
+static int s2n_recv_client_elliptic_curves(struct s2n_connection *conn, struct s2n_stuffer *extension)
 {
     uint16_t size_of_all;
     struct s2n_blob proposed_curves;
@@ -341,18 +346,31 @@ static int s2n_elliptic_curves_rcv(struct s2n_connection *conn, struct s2n_stuff
     proposed_curves.data = s2n_stuffer_raw_read(extension, proposed_curves.size);
     notnull_check(proposed_curves.data);
 
-    if (s2n_ecc_find_supported_curve(&proposed_curves, &conn->pending.server_ecc_params.negotiated_curve) != 0) {
+    if (s2n_ecc_find_supported_curve(&proposed_curves, &conn->secure.server_ecc_params.negotiated_curve) != 0) {
         /* Can't agree on a curve, ECC is not allowed. Return success to proceed with the handhsake. */
-        conn->pending.server_ecc_params.negotiated_curve = NULL;
+        conn->secure.server_ecc_params.negotiated_curve = NULL;
     }
     return 0;
 }
 
-static int s2n_ec_point_formats_rcv(struct s2n_connection *conn, struct s2n_stuffer *extension)
+static int s2n_recv_client_ec_point_formats(struct s2n_connection *conn, struct s2n_stuffer *extension)
 {
     /**
      * Only uncompressed points are supported by the server and the client must include it in
      * the extension. Just skip the extension.
      */
+    return 0;
+}
+
+static int s2n_recv_client_renegotiation_info(struct s2n_connection *conn, struct s2n_stuffer *extension)
+{
+    /* RFC5746 Section 3.2: The renegotiated_connection field is of zero length for the initial handshake. */
+    uint8_t renegotiated_connection_len;
+    GUARD(s2n_stuffer_read_uint8(extension, &renegotiated_connection_len));
+    if (s2n_stuffer_data_available(extension) || renegotiated_connection_len) {
+        S2N_ERROR(S2N_ERR_NON_EMPTY_RENEGOTIATION_INFO);
+    }
+
+    conn->secure_renegotiation = 1;
     return 0;
 }

@@ -24,7 +24,7 @@
 #include <openssl/dh.h>
 #include <s2n.h>
 
-#if !defined(OPENSSL_IS_BORINGSSL)
+#if !defined(OPENSSL_IS_BORINGSSL) && !defined(OPENSSL_FIPS) && !defined(LIBRESSL_VERSION_NUMBER)
 
 static uint8_t dhparams[] =
     "-----BEGIN DH PARAMETERS-----\n"
@@ -42,7 +42,7 @@ int main(int argc, char **argv)
 
     BEGIN_TEST();
 
-    EXPECT_SUCCESS(s2n_init());
+    EXPECT_EQUAL(s2n_get_private_random_bytes_used(), 0);
 
     /* Parse the DH params */
     b.data = dhparams;
@@ -54,8 +54,6 @@ int main(int argc, char **argv)
     b.size = s2n_stuffer_data_available(&dhparams_out);
     b.data = s2n_stuffer_raw_read(&dhparams_out, b.size);
     EXPECT_SUCCESS(s2n_pkcs3_to_dh_params(&dh_params, &b));
-
-    EXPECT_EQUAL(s2n_get_private_random_bytes_used(), 0);
 
     EXPECT_SUCCESS(s2n_dh_generate_ephemeral_key(&dh_params));
     

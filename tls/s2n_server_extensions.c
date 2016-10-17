@@ -21,14 +21,15 @@
 #include "tls/s2n_tls_parameters.h"
 #include "tls/s2n_connection.h"
 #include "tls/s2n_tls.h"
+#include "tls/s2n_cipher_suites.h"
 
 #include "stuffer/s2n_stuffer.h"
 
 #include "utils/s2n_safety.h"
 #include "utils/s2n_blob.h"
 
-static int s2n_server_recv_alpn(struct s2n_connection *conn, struct s2n_stuffer *extension);
-static int s2n_server_recv_status_request(struct s2n_connection *conn, struct s2n_stuffer *extension);
+static int s2n_recv_server_alpn(struct s2n_connection *conn, struct s2n_stuffer *extension);
+static int s2n_recv_server_status_request(struct s2n_connection *conn, struct s2n_stuffer *extension);
 
 int s2n_server_extensions_send(struct s2n_connection *conn, struct s2n_stuffer *out)
 {
@@ -42,6 +43,12 @@ int s2n_server_extensions_send(struct s2n_connection *conn, struct s2n_stuffer *
     if (s2n_server_can_send_ocsp(conn)) {
         total_size += 4;
     }
+    if (conn->secure_renegotiation) {
+        total_size += 5;
+    }
+    if (conn->secure.cipher_suite->key_exchange_alg->flags & S2N_KEY_EXCHANGE_ECC) {
+        total_size += 6;
+    }
 
     if (total_size == 0) {
         return 0;
@@ -49,13 +56,39 @@ int s2n_server_extensions_send(struct s2n_connection *conn, struct s2n_stuffer *
 
     GUARD(s2n_stuffer_write_uint16(out, total_size));
 
+    /* Write the Supported Points Format extention.
+     * RFC 4492 section 5.2 states that the absence of this extension in the Server Hello
+     * is equivalent to allowing only the uncompressed point format. Let's send the
+     * extension in case clients(Openssl 1.0.0) don't honor the implied behavior.
+     */
+    if (conn->secure.cipher_suite->key_exchange_alg->flags & S2N_KEY_EXCHANGE_ECC)  {
+        GUARD(s2n_stuffer_write_uint16(out, TLS_EXTENSION_EC_POINT_FORMATS));
+        /* Total extension length */
+        GUARD(s2n_stuffer_write_uint16(out, 2));
+        /* Format list length */
+        GUARD(s2n_stuffer_write_uint8(out, 1));
+        /* Only uncompressed format is supported. Interoperability shouldn't be an issue:
+         * RFC 4492 Section 5.1.2: Implementations must support it for all of their curves.
+         */
+        GUARD(s2n_stuffer_write_uint8(out, TLS_EC_FORMAT_UNCOMPRESSED));
+    }
+
+    /* Write the renegotiation_info extension */
+    if (conn->secure_renegotiation) {
+        GUARD(s2n_stuffer_write_uint16(out, TLS_EXTENSION_RENEGOTIATION_INFO));
+        /* renegotiation_info length */
+        GUARD(s2n_stuffer_write_uint16(out, 1));
+        /* renegotiated_connection length. Zero since we don't support renegotiation. */
+        GUARD(s2n_stuffer_write_uint8(out, 0));
+    }
+
     /* Write ALPN extension */
     if (application_protocol_len) {
         GUARD(s2n_stuffer_write_uint16(out, TLS_EXTENSION_ALPN));
         GUARD(s2n_stuffer_write_uint16(out, application_protocol_len + 3));
         GUARD(s2n_stuffer_write_uint16(out, application_protocol_len + 1));
         GUARD(s2n_stuffer_write_uint8(out, application_protocol_len));
-        GUARD(s2n_stuffer_write_bytes(out, (uint8_t*)conn->application_protocol, application_protocol_len));
+        GUARD(s2n_stuffer_write_bytes(out, (uint8_t *) conn->application_protocol, application_protocol_len));
     }
 
     /* Write OCSP extension */
@@ -91,10 +124,10 @@ int s2n_server_extensions_recv(struct s2n_connection *conn, struct s2n_blob *ext
 
         switch (extension_type) {
         case TLS_EXTENSION_ALPN:
-            GUARD(s2n_server_recv_alpn(conn, &extension));
+            GUARD(s2n_recv_server_alpn(conn, &extension));
             break;
         case TLS_EXTENSION_STATUS_REQUEST:
-            GUARD(s2n_server_recv_status_request(conn, &extension));
+            GUARD(s2n_recv_server_status_request(conn, &extension));
             break;
         }
     }
@@ -102,7 +135,7 @@ int s2n_server_extensions_recv(struct s2n_connection *conn, struct s2n_blob *ext
     return 0;
 }
 
-int s2n_server_recv_alpn(struct s2n_connection *conn, struct s2n_stuffer *extension)
+int s2n_recv_server_alpn(struct s2n_connection *conn, struct s2n_stuffer *extension)
 {
     uint16_t size_of_all;
     GUARD(s2n_stuffer_read_uint16(extension, &size_of_all));
@@ -124,10 +157,9 @@ int s2n_server_recv_alpn(struct s2n_connection *conn, struct s2n_stuffer *extens
     return 0;
 }
 
-int s2n_server_recv_status_request(struct s2n_connection *conn, struct s2n_stuffer *extension)
+int s2n_recv_server_status_request(struct s2n_connection *conn, struct s2n_stuffer *extension)
 {
     conn->status_type = S2N_STATUS_REQUEST_OCSP;
 
     return 0;
 }
-

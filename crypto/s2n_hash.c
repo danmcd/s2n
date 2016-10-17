@@ -24,7 +24,8 @@
 
 int s2n_hash_digest_size(s2n_hash_algorithm alg)
 {
-    int sizes[] = { 0, MD5_DIGEST_LENGTH, SHA_DIGEST_LENGTH, SHA224_DIGEST_LENGTH, SHA256_DIGEST_LENGTH, SHA384_DIGEST_LENGTH, SHA512_DIGEST_LENGTH, MD5_DIGEST_LENGTH + SHA_DIGEST_LENGTH };
+    int sizes[] =
+        { 0, MD5_DIGEST_LENGTH, SHA_DIGEST_LENGTH, SHA224_DIGEST_LENGTH, SHA256_DIGEST_LENGTH, SHA384_DIGEST_LENGTH, SHA512_DIGEST_LENGTH, MD5_DIGEST_LENGTH + SHA_DIGEST_LENGTH };
 
     return sizes[alg];
 }
@@ -137,7 +138,7 @@ int s2n_hash_digest(struct s2n_hash_state *state, void *out, uint32_t size)
         break;
     case S2N_HASH_SHA384:
         eq_check(size, SHA384_DIGEST_LENGTH);
-        r = SHA512_Final(out, &state->hash_ctx.sha384);
+        r = SHA384_Final(out, &state->hash_ctx.sha384);
         break;
     case S2N_HASH_SHA512:
         eq_check(size, SHA512_DIGEST_LENGTH);

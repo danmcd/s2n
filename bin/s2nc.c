@@ -16,7 +16,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <netdb.h>
 
 #include <stdlib.h>
@@ -44,6 +44,7 @@ void usage()
     fprintf(stderr, "  -n [server name]\n");
     fprintf(stderr, "  --name [server name]\n");
     fprintf(stderr, "    Sets the SNI server name header for this client.  If not specified, the host value is used.\n");
+    fprintf(stderr, "\n");
     fprintf(stderr, "  --s,--status\n");
     fprintf(stderr, "    Request the OCSP status of the remote server certificate\n");
     fprintf(stderr, "\n");
@@ -51,8 +52,9 @@ void usage()
 }
 
 extern int echo(struct s2n_connection *conn, int sockfd);
+extern int negotiate(struct s2n_connection *conn);
 
-int main(int argc, char * const *argv)
+int main(int argc, char *const *argv)
 {
     struct addrinfo hints, *ai_list, *ai;
     int r, sockfd = 0;
@@ -65,34 +67,35 @@ int main(int argc, char * const *argv)
     const char *port = "443";
 
     static struct option long_options[] = {
-        { "alpn", required_argument, 0, 'a' },
-        { "help", no_argument, 0, 'h' },
-        { "name", required_argument, 0, 'n' },
-        { "status", no_argument, 0, 's' },
+        {"alpn", required_argument, 0, 'a'},
+        {"help", no_argument, 0, 'h'},
+        {"name", required_argument, 0, 'n'},
+        {"status", no_argument, 0, 's'},
+
     };
     while (1) {
         int option_index = 0;
-        int c = getopt_long (argc, argv, "a:hn:s", long_options, &option_index);
+        int c = getopt_long(argc, argv, "a:hn:s", long_options, &option_index);
         if (c == -1) {
             break;
         }
         switch (c) {
-            case 'a':
-                alpn_protocols = optarg;
-                break;
-            case 'h':
-                usage();
-                break;
-            case 'n':
-                server_name = optarg;
-                break;
-            case 's':
-                type = S2N_STATUS_REQUEST_OCSP;
-                break;
-            case '?':
-            default:
-                usage();
-                break;
+        case 'a':
+            alpn_protocols = optarg;
+            break;
+        case 'h':
+            usage();
+            break;
+        case 'n':
+            server_name = optarg;
+            break;
+        case 's':
+            type = S2N_STATUS_REQUEST_OCSP;
+            break;
+        case '?':
+        default:
+            usage();
+            break;
         }
     }
 
@@ -111,10 +114,7 @@ int main(int argc, char * const *argv)
         server_name = host;
     }
 
-    if (memset(&hints, 0, sizeof(hints)) != &hints) {
-        fprintf(stderr, "memset error: %s\n", strerror(errno));
-        exit(1);
-    }
+    memset(&hints, 0, sizeof(hints));
 
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -217,11 +217,11 @@ int main(int argc, char * const *argv)
             memcpy(protocols[index], next, length);
             protocols[index][length] = '\0';
         }
-        if (s2n_config_set_protocol_preferences(config, (const char * const *)protocols, protocol_count) < 0) {
+        if (s2n_config_set_protocol_preferences(config, (const char *const *)protocols, protocol_count) < 0) {
             fprintf(stderr, "Failed to set protocol preferences: '%s'\n", s2n_strerror(s2n_errno, "EN"));
             exit(1);
         }
-        while(protocol_count) {
+        while (protocol_count) {
             protocol_count--;
             free(protocols[protocol_count]);
         }
@@ -234,8 +234,6 @@ int main(int argc, char * const *argv)
         fprintf(stderr, "Error getting new connection: '%s'\n", s2n_strerror(s2n_errno, "EN"));
         exit(1);
     }
-
-    printf("Connected to %s:%s\n", host, port);
 
     if (s2n_connection_set_config(conn, config) < 0) {
         fprintf(stderr, "Error setting configuration: '%s'\n", s2n_strerror(s2n_errno, "EN"));
@@ -253,7 +251,17 @@ int main(int argc, char * const *argv)
     }
 
     /* See echo.c */
+    negotiate(conn);
+
+    printf("Connected to %s:%s\n", host, port);
+
     echo(conn, sockfd);
+
+    s2n_blocked_status blocked;
+    if (s2n_shutdown(conn, &blocked) < 0) {
+        fprintf(stderr, "Error calling s2n_shutdown: '%s'\n", s2n_strerror(s2n_errno, "EN"));
+        exit(1);
+    }
 
     if (s2n_connection_free(conn) < 0) {
         fprintf(stderr, "Error freeing connection: '%s'\n", s2n_strerror(s2n_errno, "EN"));

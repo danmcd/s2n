@@ -63,34 +63,34 @@ int main(int argc, char **argv)
     uint8_t mac_key[] = "sample mac key";
     struct s2n_blob fixed_iv = {.data = mac_key,.size = sizeof(mac_key) };
     struct s2n_hmac_state check_mac;
-    uint8_t random_data[S2N_DEFAULT_FRAGMENT_LENGTH + 1];
+    uint8_t random_data[S2N_SMALL_FRAGMENT_LENGTH + 1];
     struct s2n_blob r = {.data = random_data, .size = sizeof(random_data)};
 
     BEGIN_TEST();
 
-    EXPECT_SUCCESS(s2n_init());
     EXPECT_SUCCESS(s2n_hmac_init(&check_mac, S2N_HMAC_SHA1, fixed_iv.data, fixed_iv.size));
     EXPECT_SUCCESS(s2n_get_urandom_data(&r));
     EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
 
     /* Peer and we are in sync */
-    conn->server = &conn->active;
+    conn->server = &conn->initial;
+    conn->client = &conn->initial;
 
     /* test the null cipher. */
-    conn->active.cipher_suite = &s2n_null_cipher_suite;
+    conn->initial.cipher_suite = &s2n_null_cipher_suite;
     conn->actual_protocol_version = S2N_TLS11;
 
-    for (int i = 0; i <= S2N_DEFAULT_FRAGMENT_LENGTH + 1; i++) {
+    for (int i = 0; i <= S2N_SMALL_FRAGMENT_LENGTH + 1; i++) {
         struct s2n_blob in = {.data = random_data,.size = i };
         int bytes_written;
 
         EXPECT_SUCCESS(s2n_stuffer_wipe(&conn->out));
         EXPECT_SUCCESS(bytes_written = s2n_record_write(conn, TLS_APPLICATION_DATA, &in));
 
-        if (i < S2N_DEFAULT_FRAGMENT_LENGTH) {
+        if (i < S2N_SMALL_FRAGMENT_LENGTH) {
             EXPECT_EQUAL(bytes_written, i);
         } else {
-            EXPECT_EQUAL(bytes_written, S2N_DEFAULT_FRAGMENT_LENGTH);
+            EXPECT_EQUAL(bytes_written, S2N_SMALL_FRAGMENT_LENGTH);
         }
 
         EXPECT_EQUAL(conn->out.blob.data[0], TLS_APPLICATION_DATA);
@@ -114,26 +114,26 @@ int main(int argc, char **argv)
     }
 
     /* test a fake streaming cipher with a MAC */
-    conn->active.cipher_suite->hmac_alg = S2N_HMAC_SHA1;
-    EXPECT_SUCCESS(s2n_hmac_init(&conn->active.client_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
-    EXPECT_SUCCESS(s2n_hmac_init(&conn->active.server_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
-    conn->active.cipher_suite = &s2n_null_cipher_suite;
+    conn->initial.cipher_suite->hmac_alg = S2N_HMAC_SHA1;
+    EXPECT_SUCCESS(s2n_hmac_init(&conn->initial.client_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
+    EXPECT_SUCCESS(s2n_hmac_init(&conn->initial.server_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
+    conn->initial.cipher_suite = &s2n_null_cipher_suite;
     conn->actual_protocol_version = S2N_TLS11;
 
-    for (int i = 0; i <= S2N_DEFAULT_FRAGMENT_LENGTH + 1; i++) {
+    for (int i = 0; i <= S2N_SMALL_FRAGMENT_LENGTH + 1; i++) {
         struct s2n_blob in = {.data = random_data,.size = i };
         int bytes_written;
 
         EXPECT_SUCCESS(s2n_hmac_reset(&check_mac));
-        EXPECT_SUCCESS(s2n_hmac_update(&check_mac, conn->active.server_sequence_number, 8));
+        EXPECT_SUCCESS(s2n_hmac_update(&check_mac, conn->initial.server_sequence_number, 8));
 
         EXPECT_SUCCESS(s2n_stuffer_wipe(&conn->out));
         EXPECT_SUCCESS(bytes_written = s2n_record_write(conn, TLS_APPLICATION_DATA, &in));
 
-        if (i < S2N_DEFAULT_FRAGMENT_LENGTH - 20) {
+        if (i < S2N_SMALL_FRAGMENT_LENGTH - 20) {
             EXPECT_EQUAL(bytes_written, i);
         } else {
-            EXPECT_EQUAL(bytes_written, S2N_DEFAULT_FRAGMENT_LENGTH - 20);
+            EXPECT_EQUAL(bytes_written, S2N_SMALL_FRAGMENT_LENGTH - 20);
         }
 
         uint16_t predicted_length = bytes_written + 20;
@@ -153,7 +153,7 @@ int main(int argc, char **argv)
 
         uint8_t check_digest[20];
         EXPECT_SUCCESS(s2n_hmac_digest(&check_mac, check_digest, 20));
-        EXPECT_SUCCESS(s2n_hmac_digest_verify(conn->out.blob.data + 5 + bytes_written, 20, check_digest, 20));
+        EXPECT_SUCCESS(s2n_hmac_digest_verify(conn->out.blob.data + 5 + bytes_written, check_digest, 20));
 
         EXPECT_SUCCESS(s2n_stuffer_wipe(&conn->in));
         EXPECT_SUCCESS(s2n_stuffer_wipe(&conn->header_in));
@@ -196,18 +196,18 @@ int main(int argc, char **argv)
     }
 
     /* Test a mock block cipher with a mac - in TLS1.0 mode */
-    EXPECT_SUCCESS(s2n_hmac_init(&conn->active.client_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
-    EXPECT_SUCCESS(s2n_hmac_init(&conn->active.server_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
+    EXPECT_SUCCESS(s2n_hmac_init(&conn->initial.client_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
+    EXPECT_SUCCESS(s2n_hmac_init(&conn->initial.server_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
     conn->actual_protocol_version = S2N_TLS10;
-    conn->active.cipher_suite = &mock_block_cipher_suite;
+    conn->initial.cipher_suite = &mock_block_cipher_suite;
 
-    uint16_t max_aligned_fragment = S2N_DEFAULT_FRAGMENT_LENGTH - (S2N_DEFAULT_FRAGMENT_LENGTH % 16);
+    uint16_t max_aligned_fragment = S2N_SMALL_FRAGMENT_LENGTH - (S2N_SMALL_FRAGMENT_LENGTH % 16);
     for (int i = 0; i <= max_aligned_fragment + 1; i++) {
         struct s2n_blob in = {.data = random_data,.size = i };
         int bytes_written;
 
         EXPECT_SUCCESS(s2n_hmac_reset(&check_mac));
-        EXPECT_SUCCESS(s2n_hmac_update(&check_mac, conn->active.client_sequence_number, 8));
+        EXPECT_SUCCESS(s2n_hmac_update(&check_mac, conn->initial.client_sequence_number, 8));
 
         EXPECT_SUCCESS(s2n_stuffer_wipe(&conn->out));
         EXPECT_SUCCESS(bytes_written = s2n_record_write(conn, TLS_APPLICATION_DATA, &in));
@@ -247,7 +247,7 @@ int main(int argc, char **argv)
 
         uint8_t check_digest[20];
         EXPECT_SUCCESS(s2n_hmac_digest(&check_mac, check_digest, 20));
-        EXPECT_SUCCESS(s2n_hmac_digest_verify(conn->out.blob.data + 5 + bytes_written, 20, check_digest, 20));
+        EXPECT_SUCCESS(s2n_hmac_digest_verify(conn->out.blob.data + 5 + bytes_written, check_digest, 20));
 
         EXPECT_SUCCESS(s2n_stuffer_wipe(&conn->in));
         EXPECT_SUCCESS(s2n_stuffer_wipe(&conn->header_in));
@@ -263,19 +263,19 @@ int main(int argc, char **argv)
     }
 
     /* Test a mock block cipher with a mac - in TLS1.1+ mode */
-    conn->active.cipher_suite->hmac_alg = S2N_HMAC_SHA1;
-    EXPECT_SUCCESS(s2n_hmac_init(&conn->active.client_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
-    EXPECT_SUCCESS(s2n_hmac_init(&conn->active.server_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
+    conn->initial.cipher_suite->hmac_alg = S2N_HMAC_SHA1;
+    EXPECT_SUCCESS(s2n_hmac_init(&conn->initial.client_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
+    EXPECT_SUCCESS(s2n_hmac_init(&conn->initial.server_record_mac, S2N_HMAC_SHA1, mac_key, sizeof(mac_key)));
     conn->actual_protocol_version = S2N_TLS11;
-    conn->active.cipher_suite = &mock_block_cipher_suite;
+    conn->initial.cipher_suite = &mock_block_cipher_suite;
 
-    max_aligned_fragment = S2N_DEFAULT_FRAGMENT_LENGTH - (S2N_DEFAULT_FRAGMENT_LENGTH % 16);
+    max_aligned_fragment = S2N_SMALL_FRAGMENT_LENGTH - (S2N_SMALL_FRAGMENT_LENGTH % 16);
     for (int i = 0; i <= max_aligned_fragment + 1; i++) {
         struct s2n_blob in = {.data = random_data,.size = i };
         int bytes_written;
 
         EXPECT_SUCCESS(s2n_hmac_reset(&check_mac));
-        EXPECT_SUCCESS(s2n_hmac_update(&check_mac, conn->active.client_sequence_number, 8));
+        EXPECT_SUCCESS(s2n_hmac_update(&check_mac, conn->initial.client_sequence_number, 8));
 
         EXPECT_SUCCESS(s2n_stuffer_wipe(&conn->out));
         EXPECT_SUCCESS(bytes_written = s2n_record_write(conn, TLS_APPLICATION_DATA, &in));
@@ -315,7 +315,7 @@ int main(int argc, char **argv)
 
         uint8_t check_digest[20];
         EXPECT_SUCCESS(s2n_hmac_digest(&check_mac, check_digest, 20));
-        EXPECT_SUCCESS(s2n_hmac_digest_verify(conn->out.blob.data + 16 + 5 + bytes_written, 20, check_digest, 20));
+        EXPECT_SUCCESS(s2n_hmac_digest_verify(conn->out.blob.data + 16 + 5 + bytes_written, check_digest, 20));
         EXPECT_SUCCESS(s2n_stuffer_wipe(&conn->in));
         EXPECT_SUCCESS(s2n_stuffer_wipe(&conn->header_in));
         EXPECT_SUCCESS(s2n_stuffer_copy(&conn->out, &conn->header_in, 5));
